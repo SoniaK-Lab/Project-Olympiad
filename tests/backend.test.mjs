@@ -49,5 +49,12 @@ assert.equal((await request('me','GET',undefined,'https://test.local','missing-i
 login('student-id','student@example.test');
 assert.equal((await request('me','GET',undefined,'https://test.local',mentor)).status,403);
 assert.equal((await request('admin-views')).status,403);
+login('owner','owner@example.test');
+assert.equal((await request('admin-demo-users','POST',{})).status,200);
+assert.equal((await request('admin-demo-users','POST',{})).status,200);
+assert.equal((await request('admin-views')).data.members.length,10);
+assert.equal((await request('me','GET',undefined,'https://test.local','demo-mentor-maryam')).data.user.role,'mentor');
+assert.equal((await request('me','GET',undefined,'https://test.local','demo-student-sara')).data.user.role,'student');
+login('student-id','student@example.test');assert.equal((await request('admin-demo-users','POST',{})).status,403);
 console.log('PASS: admin role views, effective-role restrictions and rejection of non-admin impersonation');
 console.log('PASS: authentication, bootstrap, enrollment, role permissions, student/mentor isolation, CSRF, attendance invalidation, stale writes, private progress');
