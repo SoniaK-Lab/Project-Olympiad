@@ -246,4 +246,21 @@ body{background:#fbf7ef;color:#314c52}p{color:#6a7d7d}aside{background:#fffcf6;b
 
 .hero button{background:#28536d;color:#fff}.hero button:hover{background:#1e4359}[dir=rtl] nav button.active{background:#e3edf8;box-shadow:inset -3px 0 #d49ab2}.stat:nth-child(3) .stat-icon{background:#deecfb;color:#6c91b6}
 </style>
+<script>
+// Scheduling remains mentor-led inside My sessions; mentor discovery is removed.
+document.querySelector('nav button[data-view="mentors"]')?.remove();
+const discoveryView=document.querySelector('#mentors');if(discoveryView){discoveryView.hidden=true;discoveryView.setAttribute('aria-hidden','true')}
+document.querySelector('#overview .bottom')?.remove();
+const mentorLaunch=document.querySelector('#overview .hero-copy button');if(mentorLaunch){mentorLaunch.textContent='مشاهدهٔ برنامهٔ جلسات ←';mentorLaunch.onclick=()=>navigate('sessions')}
+const mentorStat=document.querySelector('#overview .stats .stat');if(mentorStat)mentorStat.remove();
+const stats=document.querySelector('#overview .stats');if(stats)stats.style.gridTemplateColumns='repeat(2,minmax(0,1fr))';
+const directSchedule=document.createElement('dialog');directSchedule.id='directMentorSchedule';directSchedule.innerHTML='<form id="directMentorForm"><h2>انتخاب منتورِ مسئول جلسه</h2><p>منتورِ نمایشی را انتخاب کنید و سپس زمان و هدف جلسه را تعیین کنید.</p><label for="sessionMentorChoice">منتور جلسه</label><select id="sessionMentorChoice">'+mentors.map((m,i)=>'<option value="'+i+'">دکتر '+m[0]+' — '+m[1]+'</option>').join('')+'</select><div class="actions"><button type="button" class="secondary" onclick="document.querySelector(\'#directMentorSchedule\').close()">انصراف</button><button type="submit">تعیین زمان و هدف</button></div></form>';document.body.append(directSchedule);
+function startDirectMentorSchedule(){if(mentorMode!=='mentor')return;directSchedule.showModal()}
+$('#directMentorForm').onsubmit=e=>{e.preventDefault();if(mentorMode!=='mentor')return;const i=Number($('#sessionMentorChoice').value);directSchedule.close();book(i)};
+const schedulingRoleUI=updateRoleUI;updateRoleUI=function(){schedulingRoleUI();const isMentor=mentorMode==='mentor';const add=$('#sessions .greeting>button');if(add)add.onclick=startDirectMentorSchedule;
+if(isMentor)mentorPolicy.innerHTML='<strong>مدیریت برنامه با منتور</strong><p>از دکمهٔ «تعیین جلسه برای دانشجو» استفاده کنید و زمان و هدف جلسه را مشخص کنید. تغییر برنامه، تأیید حضور قبلی دانشجو را بازنشانی می‌کند.</p><p class="role-banner">نقش‌ها نمایشی و اطلاعات روی همین مرورگر هستند؛ احراز هویت و ارسال جلسه به افراد دیگر انجام نمی‌شود.</p>';
+if(!state.sessions.length){const empty=isMentor?'<h3>هنوز جلسه‌ای تعیین نشده است.</h3><p>زمان و هدف جلسه را برای دانشجو مشخص کنید.</p><button onclick="startDirectMentorSchedule()">تعیین جلسه برای دانشجو</button>':'<h3>منتور هنوز جلسه‌ای تعیین نکرده است.</h3><p>پس از ثبت برنامه توسط منتور، زمان و هدف جلسه اینجا نمایش داده می‌شود.</p>';$('#allSessions').innerHTML='<div class="student-session-info">'+empty+'</div>';$('#overviewSessions').innerHTML='<div class="student-session-info">'+empty+'</div>'}
+};
+const scheduleNavigation=navigate;navigate=function(id){scheduleNavigation(id==='mentors'?'sessions':id)};render();
+</script>
 </body></html>
