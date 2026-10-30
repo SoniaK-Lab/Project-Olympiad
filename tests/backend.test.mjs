@@ -19,7 +19,7 @@ function moduleFrom(path,imports){const exports={};const code=ts.transpileModule
 const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
 const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
-async function request(path,method='GET',body,origin='https://test.local'){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
+async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
 login('owner','owner@example.test');assert.equal((await request('me')).data.user.role,'admin');
 const create=async(email,role,mentorId)=>{const r=await request('members','POST',{email,role,mentorId,name:email});assert.equal(r.status,201,JSON.stringify(r));return r.data.id};
@@ -39,4 +39,15 @@ login('student-id','student@example.test');r=await request('sessions');assert.eq
 assert.equal((await request('progress','PUT',{data:{note:'test'},version:0})).status,200);assert.equal((await request('progress','PUT',{data:{note:'stale'},version:0})).status,409);
 login('other-id','other@example.test');assert.equal((await request('progress')).data.data,null);
 login('unlisted','unlisted@example.test');assert.equal((await request('me')).status,403);
+login('owner','owner@example.test');
+assert.equal((await request('admin-views')).data.members.length,4);
+const preview=await request('me','GET',undefined,'https://test.local',student);
+assert.equal(preview.data.user.role,'student');assert.equal(preview.data.isAdmin,true);
+assert.equal((await request('sessions','POST',{studentId:student},'https://test.local',student)).status,403);
+assert.equal((await request('me','GET',undefined,'https://test.local',mentor)).data.user.role,'mentor');
+assert.equal((await request('me','GET',undefined,'https://test.local','missing-id')).status,404);
+login('student-id','student@example.test');
+assert.equal((await request('me','GET',undefined,'https://test.local',mentor)).status,403);
+assert.equal((await request('admin-views')).status,403);
+console.log('PASS: admin role views, effective-role restrictions and rejection of non-admin impersonation');
 console.log('PASS: authentication, bootstrap, enrollment, role permissions, student/mentor isolation, CSRF, attendance invalidation, stale writes, private progress');
