@@ -1,3 +1,4 @@
+import { learningStats } from '../../../../lib/learning-stats';
 import { currentMember,database,HttpError,csrf,body,text,response,Member } from '../../../../lib/bridge';
 export const dynamic='force-dynamic';
 async function handle(req:Request){try{const actor=await currentMember(),db=database();let me=actor;const path=new URL(req.url).pathname.replace('/api/bridge/','').split('/');const method=req.method;if(method!=='GET')csrf(req);
@@ -18,6 +19,11 @@ if(me.role!=='admin'&&!(me.role==='mentor'&&session.mentor_id===me.id))throw new
 if(method==='PATCH'){const v=validateSession(b);const result=await db.prepare('UPDATE sessions SET date=?,time=?,goal=?,confirmed=0,version=version+1 WHERE id=? AND version=?').bind(v.date,v.time,v.goal,session.id,b.version).run();if(!result.meta.changes)throw new HttpError(409,'جلسه هم‌زمان تغییر کرده است');return response({ok:true})}
 if(method==='DELETE'){const result=await db.prepare('DELETE FROM sessions WHERE id=? AND version=?').bind(session.id,b.version).run();if(!result.meta.changes)throw new HttpError(409,'جلسه هم‌زمان تغییر کرده است');return response({ok:true})}
 }
+if(path[0]==='learning-stats'&&method==='GET'){
+if(!['admin','mentor'].includes(me.role))throw new HttpError(403,'گزارش یادگیری فقط برای مدیر و منتور مجاز است');
+const select="SELECT s.id,s.name,s.mentor_id,m.name AS mentor_name,p.data,p.updated FROM members s LEFT JOIN members m ON m.id=s.mentor_id LEFT JOIN progress p ON p.member_id=s.id WHERE s.role='student'";
+const rows=me.role==='admin'?(await db.prepare(select+' ORDER BY s.name').all()).results:(await db.prepare(select+' AND s.mentor_id=? ORDER BY s.name').bind(me.id).all()).results;
+return response({students:rows.map((row:any)=>{let data={};try{data=row.data?JSON.parse(row.data):{}}catch{}return {id:row.id,name:row.name,mentorId:row.mentor_id,mentorName:row.mentor_name,hasProgress:row.data!==null,lastSaved:row.updated||null,stats:learningStats(data)}}),generatedAt:new Date().toISOString()})}
 if(path[0]==='progress'){
 if(method==='GET'){const p=await db.prepare('SELECT data,version FROM progress WHERE member_id=?').bind(me.id).first<any>();return response({data:p?JSON.parse(p.data):null,version:p?.version||0})}
 if(method==='PUT'){const b=await body(req);if(!b.data||typeof b.data!=='object'||!Number.isInteger(b.version))throw new HttpError(400,'پیشرفت نامعتبر است');const payload=JSON.stringify(b.data);if(payload.length>80000)throw new HttpError(413,'یادداشت‌ها بیش از حد بزرگ هستند');let result;if(b.version===0)result=await db.prepare('INSERT OR IGNORE INTO progress(member_id,data,updated) VALUES(?,?,?)').bind(me.id,payload,new Date().toISOString()).run();else result=await db.prepare('UPDATE progress SET data=?,version=version+1,updated=? WHERE member_id=? AND version=?').bind(payload,new Date().toISOString(),me.id,b.version).run();if(!result.meta.changes)throw new HttpError(409,'پیشرفت در پنجرهٔ دیگری تغییر کرده؛ صفحه را تازه کنید');return response({version:b.version+1})}

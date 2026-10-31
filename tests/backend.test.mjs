@@ -17,7 +17,8 @@ const DB={prepare(query){
 let identity=null;
 function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date});return exports}
 const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
-const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge});
+const statsModule=moduleFrom('lib/learning-stats.ts',{});
+const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
@@ -56,5 +57,15 @@ assert.equal((await request('admin-views')).data.members.length,10);
 assert.equal((await request('me','GET',undefined,'https://test.local','demo-mentor-maryam')).data.user.role,'mentor');
 assert.equal((await request('me','GET',undefined,'https://test.local','demo-student-sara')).data.user.role,'student');
 login('student-id','student@example.test');assert.equal((await request('admin-demo-users','POST',{})).status,403);
+login('student-id','student@example.test');
+assert.equal((await request('learning-stats')).status,403);
+const sample={done:[0,0,2,8],caseState:{done:['cap','cap'],notes:{cap:'private note'},wizards:{cap:{questionVersion:2,step:6,answers:{exam:0,test:0,diagnosis:2,treat:1,follow:0}}}},extras:{checks:[0,2]}};
+const oldVersion=(await request('progress')).data.version;
+assert.equal((await request('progress','PUT',{version:oldVersion,data:sample})).status,200);
+login('mentor-id','mentor@example.test');
+let report=await request('learning-stats');assert.equal(report.status,200);assert.equal(report.data.students.length,1);assert.equal(report.data.students[0].id,student);assert.equal(report.data.students[0].stats.activitiesCompleted,2);assert.equal(report.data.students[0].stats.correct,4);assert.equal(report.data.students[0].stats.accuracy,80);assert.equal(JSON.stringify(report.data).includes('private note'),false);
+login('owner','owner@example.test');report=await request('learning-stats');assert.equal(report.data.students.length,5);
+const noActivity=report.data.students.find(s=>s.id===other);assert.equal(noActivity.stats.accuracy,null);assert.equal(noActivity.hasProgress,false);
+console.log('PASS: per-mentee analytics, mentor scope, student denial, correct aggregation and no note disclosure');
 console.log('PASS: admin role views, effective-role restrictions and rejection of non-admin impersonation');
 console.log('PASS: authentication, bootstrap, enrollment, role permissions, student/mentor isolation, CSRF, attendance invalidation, stale writes, private progress');
