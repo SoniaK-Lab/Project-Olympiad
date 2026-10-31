@@ -15,6 +15,13 @@
       "when": 1793411255930,
       "tag": "0001_tired_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793412367220,
+      "tag": "0002_unusual_sunspot",
+      "breakpoints": true
     }
   ]
 }

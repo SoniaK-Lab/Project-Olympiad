@@ -19,7 +19,8 @@ function moduleFrom(path,imports){const exports={};const code=ts.transpileModule
 const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
 const assignmentModule=moduleFrom('lib/assignments.ts',{'./bridge':bridge});
-const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
+const callModule=moduleFrom('lib/calls.ts',{'./bridge':bridge});
+const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/calls':callModule,'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
@@ -86,3 +87,24 @@ console.log('PASS: assignment lifecycle, revision history, draft privacy, role i
 console.log('PASS: per-mentee analytics, mentor scope, student denial, correct aggregation and no note disclosure');
 console.log('PASS: admin role views, effective-role restrictions and rejection of non-admin impersonation');
 console.log('PASS: authentication, bootstrap, enrollment, role permissions, student/mentor isolation, CSRF, attendance invalidation, stale writes, private progress');
+
+login('student-id','student@example.test');
+const callPath='calls/'+sid;
+assert.equal((await request(callPath+'/join','POST',{client:'student-client-123'})).status,200);
+assert.equal((await request(callPath+'/join','POST',{client:'second-window-123'})).status,409);
+login('other-id','other@example.test');assert.equal((await request(callPath+'?client=unrelated-client')).status,403);
+login('mentor-id','mentor@example.test');
+assert.equal((await request(callPath+'/join','POST',{client:'mentor-client-123'})).status,200);
+assert.equal((await request(callPath+'?client=mentor-client-123')).data.peerClient,'student-client-123');
+assert.equal((await request(callPath+'/signal','POST',{client:'mentor-client-123',targetClient:'wrong-client',signal:{type:'offer',sdp:'v=0\r\n'}})).status,409);
+assert.equal((await request(callPath+'/signal','POST',{client:'mentor-client-123',targetClient:'student-client-123',signal:{type:'offer',sdp:'v=0\r\n'}})).status,200);
+login('student-id','student@example.test');
+let signals=await request(callPath+'?client=student-client-123');assert.equal(signals.data.messages.length,1);assert.equal(signals.data.messages[0].signal.type,'offer');
+assert.equal((await request(callPath+'?client=student-client-123&after='+signals.data.messages[0].id)).data.messages.length,0);
+assert.equal((await request(callPath+'/signal','POST',{client:'student-client-123',targetClient:'mentor-client-123',signal:{type:'offer',sdp:'v=0'}})).status,403);
+assert.equal((await request(callPath+'/signal','POST',{client:'student-client-123',targetClient:'mentor-client-123',signal:{type:'answer',sdp:'v=0'}})).status,200);
+await request(callPath+'/leave','POST',{client:'student-client-123'});
+assert.equal((await request(callPath+'?client=student-client-123')).status,409);
+login('mentor-id','mentor@example.test');assert.equal((await request(callPath+'?client=mentor-client-123')).data.peerClient,null);
+login('owner','owner@example.test');assert.equal((await request(callPath+'/join','POST',{client:'admin-client-123'})).status,403);
+console.log('PASS: call participant isolation, duplicate-device leases, signaling roles, cursors and leave cleanup');

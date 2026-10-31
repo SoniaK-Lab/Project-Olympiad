@@ -66,3 +66,11 @@ pnpm exec tsc --noEmit
 هر تکلیف به یک جلسه و همان منتور و منتی متصل است. وضعیت‌ها: assigned → submitted → revision → submitted → approved. منتی در حالت assigned یا revision می‌تواند پیش‌نویس ذخیره یا پاسخ ارسال کند. منتور فقط پاسخ ارسال‌شده را بررسی می‌کند؛ پیش‌نویس و رویدادهای پیش‌نویس به او نمایش داده نمی‌شوند. درخواست اصلاح، ویرایش دوباره را برای منتی باز می‌کند. پس از تأیید نهایی، پاسخ بسته می‌شود.
 
 مسیرها: GET/POST /api/bridge/assignments؛ GET /api/bridge/assignments/:id/history؛ POST /api/bridge/assignments/:id/answer با answer، submit و version؛ POST /api/bridge/assignments/:id/review با feedback، decision و version. پاسخ‌های ارسال‌شده و بازخوردها در assignment_events حفظ می‌شوند. ثبت تغییر و رویداد در batch اتمیک انجام می‌شود؛ تعارض نسخه با 409 رد می‌شود. در حالت کارکرد مدیر به‌جای کاربر، هویت واقعی و مؤثر هر دو در رویداد ثبت می‌شوند.
+
+### تماس زندهٔ دونفره
+
+`/api/bridge/calls/:sessionId` implements authenticated polling-based WebRTC signaling. Only the session's assigned mentor and mentee may join. Admin uses the existing explicit role view to participate as a member; a plain admin cannot observe call signaling. Each member has a 45-second device lease; duplicate tabs receive 409. Negotiation messages expire from reads after five minutes and are purged at the next join. Leave clears the participant lease and their messages. Audio/video is sent between browsers, never recorded by this backend.
+
+The mentor offers; the student answers. Both explicitly press «پیوستن به تماس». Camera starts off unless enabled in preview. Camera/microphone controls replace tracks without renegotiating, and exiting closes the peer connection and devices. Network/signaling failures show a retry state rather than a false connected status.
+
+Current transport uses Google public STUN for direct WebRTC. TURN relay is not configured, so restrictive/mobile networks may fail. Production reliability requires an authenticated TURN provider. Site audience remains owner-private; separately authorize real participants in Sites access before they can sign in. Demo `.invalid` accounts do not represent independent logins. Two-party media has not been verified across real external networks.
