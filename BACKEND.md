@@ -74,3 +74,9 @@ pnpm exec tsc --noEmit
 The mentor offers; the student answers. Both explicitly press «پیوستن به تماس». Camera starts off unless enabled in preview. Camera/microphone controls replace tracks without renegotiating, and exiting closes the peer connection and devices. Network/signaling failures show a retry state rather than a false connected status.
 
 Current transport uses Google public STUN for direct WebRTC. TURN relay is not configured, so restrictive/mobile networks may fail. Production reliability requires an authenticated TURN provider. Site audience remains owner-private; separately authorize real participants in Sites access before they can sign in. Demo `.invalid` accounts do not represent independent logins. Two-party media has not been verified across real external networks.
+
+### بیمار مجازی واکنش‌پذیر
+
+The mentee-only `virtual-patient` workspace adds an authored respiratory scenario. `source-ui/patient-engine.js` is the deterministic branching model; `source-ui/patient-ui.html` is its interface. Both are embedded into the served HTML and `document.ts`. Actions consume fictional simulation time and test-cost points. Untreated hypoxemia can deteriorate in the authored branches; oxygen changes the fictional saturation, while antimicrobial treatment never produces an immediate cure. Discharge while unstable ends with a review. The debrief reports reviewed objectives rather than clinical competency.
+
+Progress stores only version, start/end flag and action IDs in `extras.virtualPatient` through the existing per-member progress API. State is recomputed by replay on reload. Managers see the learner's existing aggregate learning reports; they do not receive the simulator menu. This simulation has no patient data entry. Scenario physiology, test timings and costs are educational fiction; source guidance is linked on the page. Tests: `node tests/patient-engine.test.mjs`.

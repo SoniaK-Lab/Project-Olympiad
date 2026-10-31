@@ -1,0 +1,15 @@
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const context={};vm.runInNewContext(readFileSync('source-ui/patient-engine.js','utf8')+'\nglobalThis.engine=VirtualPatientEngine',context);const E=context.engine;
+const start=()=>({...E.initial(),started:true});
+assert.equal(E.act(E.initial(),'oxygen').started,false);
+let s=start(),original=JSON.stringify(s);let next=E.act(s,'history');assert.equal(JSON.stringify(s),original);assert.ok(next.vitals.spo2<s.vitals.spo2);assert.equal(next.minute,2);
+s=E.act(start(),'oxygen');assert.equal(s.vitals.spo2,94);const duplicate=E.act(s,'oxygen');assert.equal(duplicate,s);
+let blocked=E.act(start(),'antibiotic');assert.equal(blocked.minute,0);assert.equal(blocked.used.includes('antibiotic'),false);
+let good=start();const actions=['assess','oxygen','senior','history','exam','xray','labs','diagnosis','antibiotic','reassess'];for(const id of actions)good=E.act(good,id);assert.equal(good.ended,true);assert.equal(E.report(good).completed,9);assert.equal(good.minute,21);assert.equal(good.cost,5);assert.equal(good.vitals.spo2,94);assert.ok(good.vitals.hr>100);assert.equal(E.report(good).earlySupport,true);
+let replay=start();for(const id of good.events.map(e=>e.id))replay=E.act(replay,id);assert.equal(JSON.stringify(replay),JSON.stringify(good));
+let unsafe=E.act(start(),'discharge');assert.equal(unsafe.ended,true);assert.equal(E.report(unsafe).unsafeDischarge,true);assert.equal(E.act(unsafe,'oxygen'),unsafe);
+let delayed=E.act(start(),'ct');assert.equal(delayed.cost,8);assert.equal(delayed.minute,10);assert.ok(delayed.vitals.spo2<88);assert.equal(E.report(delayed).unnecessaryCT,true);
+let waiting=start();for(let i=0;i<20;i++)waiting=E.act(waiting,'wait');assert.equal(waiting.ended,true);assert.equal(waiting.minute,30);assert.ok(waiting.vitals.spo2>=82);assert.equal(waiting.events.length,6);
+console.log('PASS: virtual patient branching, treatment prerequisites, deterioration, support, time/cost, terminal decisions, immutability and deterministic replay');
