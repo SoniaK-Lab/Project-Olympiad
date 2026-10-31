@@ -1,11 +1,11 @@
 import {DatabaseSync} from 'node:sqlite';
-import {readFileSync} from 'node:fs';
+import {readFileSync,readdirSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
-const sql=new DatabaseSync(':memory:');sql.exec(readFileSync('drizzle/0000_tiny_dracula.sql','utf8').replaceAll('--> statement-breakpoint',''));
-const DB={prepare(query){
+const sql=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+file,'utf8').replaceAll('--> statement-breakpoint',''));
+const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const statement of statements)out.push(await statement.run());sql.exec('COMMIT');return out}catch(e){sql.exec('ROLLBACK');throw e}},prepare(query){
  let params=[];
  return {
   bind(...p){params=p;return this},
@@ -18,7 +18,8 @@ let identity=null;
 function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date});return exports}
 const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
-const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule});
+const assignmentModule=moduleFrom('lib/assignments.ts',{'./bridge':bridge});
+const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
@@ -66,6 +67,22 @@ login('mentor-id','mentor@example.test');
 let report=await request('learning-stats');assert.equal(report.status,200);assert.equal(report.data.students.length,1);assert.equal(report.data.students[0].id,student);assert.equal(report.data.students[0].stats.activitiesCompleted,2);assert.equal(report.data.students[0].stats.correct,4);assert.equal(report.data.students[0].stats.accuracy,80);assert.equal(JSON.stringify(report.data).includes('private note'),false);
 login('owner','owner@example.test');report=await request('learning-stats');assert.equal(report.data.students.length,5);
 const noActivity=report.data.students.find(s=>s.id===other);assert.equal(noActivity.stats.accuracy,null);assert.equal(noActivity.hasProgress,false);
+login('mentor-id','mentor@example.test');
+const task=await request('assignments','POST',{sessionId:sid,title:'Clinical exercise',instructions:'Write your clinical reasoning and follow-up plan.'});assert.equal(task.status,201,JSON.stringify(task));const aid=task.data.id;
+login('other-id','other@example.test');assert.equal((await request('assignments')).data.assignments.length,0);assert.equal((await request('assignments/'+aid+'/history')).status,403);
+login('student-id','student@example.test');assert.equal((await request('assignments','POST',{sessionId:sid})).status,403);
+assert.equal((await request('assignments/'+aid+'/answer','POST',{version:1,answer:'Private draft',submit:false})).status,200);
+login('mentor-id','mentor@example.test');assert.equal((await request('assignments')).data.assignments[0].answer,'');assert.equal((await request('assignments/'+aid+'/history')).data.events.length,0);
+assert.equal((await request('assignments/'+aid+'/review','POST',{version:2,feedback:'Needs clinical detail',decision:'revision'})).status,409);
+login('student-id','student@example.test');assert.equal((await request('assignments/'+aid+'/answer','POST',{version:2,answer:'First submitted answer',submit:true})).status,200);
+assert.equal((await request('assignments/'+aid+'/answer','POST',{version:3,answer:'Premature edit',submit:true})).status,409);
+login('mentor-id','mentor@example.test');assert.equal((await request('assignments/'+aid+'/review','POST',{version:3,feedback:'Please explain your differential diagnosis.',decision:'revision'})).status,200);
+login('student-id','student@example.test');assert.equal((await request('assignments/'+aid+'/answer','POST',{version:4,answer:'Revised submitted answer',submit:true})).status,200);
+login('mentor-id','mentor@example.test');assert.equal((await request('assignments/'+aid+'/review','POST',{version:4,feedback:'Stale feedback',decision:'approved'})).status,409);
+assert.equal((await request('assignments/'+aid+'/review','POST',{version:5,feedback:'Reasoning is clear and appropriate.',decision:'approved'})).status,200);
+assert.equal((await request('assignments/'+aid+'/history')).data.events.length,4);
+login('student-id','student@example.test');assert.equal((await request('assignments/'+aid+'/answer','POST',{version:6,answer:'After approval edit',submit:true})).status,409);
+console.log('PASS: assignment lifecycle, revision history, draft privacy, role isolation and version conflicts');
 console.log('PASS: per-mentee analytics, mentor scope, student denial, correct aggregation and no note disclosure');
 console.log('PASS: admin role views, effective-role restrictions and rejection of non-admin impersonation');
 console.log('PASS: authentication, bootstrap, enrollment, role permissions, student/mentor isolation, CSRF, attendance invalidation, stale writes, private progress');
