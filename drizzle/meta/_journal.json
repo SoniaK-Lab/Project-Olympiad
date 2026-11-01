@@ -36,6 +36,20 @@
       "when": 1793532583117,
       "tag": "0004_spooky_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793533445738,
+      "tag": "0005_tiny_mentallo",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793533724519,
+      "tag": "0006_careful_reavers",
+      "breakpoints": true
     }
   ]
 }
