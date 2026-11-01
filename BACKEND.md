@@ -92,3 +92,11 @@ Topic/reply lengths, posting limits (30 writes in ten minutes), pagination, boun
 `/` opens `/login`. The custom Persian entry page uses the existing ChatGPT sign-in flow and registered membership; it does not collect passwords or offer client-controlled role selection. Authorized signed-in members see their name/role and a continue button. Unregistered accounts receive an access explanation and a switch-account action; infrastructure failures receive a retry state with no internal error disclosure.
 
 `/ui` redirects visitors without an authenticated identity to the login page while preserving the session/view query. Login return targets are limited to `/ui` on the same origin, and dynamic values are HTML-escaped. The existing Sites custom audience remains in place; the hosting sign-in/access gate can appear before the application login page. Tests: `node tests/login.test.mjs`.
+
+### سکهٔ رشد
+
+The `coins` API maintains server-side wallets, an append-only reward/purchase ledger, and cosmetic inventory. Only verified approved assignments mint rewards: 20 coins per assignment, plus 15 once when a recorded revision is followed by a new submission and approval. Historical eligible assignments are reconciled on wallet/report reads. Unique member/source keys make this idempotent; client progress, clicks, forum votes and submitted coin amounts do not award currency.
+
+Mentees can spend on a fixed catalog (rose avatar frame 30, sky simulator monitor 60, cream session notebook 40). One atomic D1 batch conditionally debits sufficient balance, grants inventory and records the purchase. Duplicate purchase requests do not debit again. Equipping requires ownership. Actual actors are stored on purchases, including admin role views. Cosmetics affect the mentee's own interface; essential content and the crisis pack remain ungated.
+
+`GET /coins` and `POST /coins/purchase` / `PUT /coins/equip` are mentee-only. `GET /coins/report` is admin-wide or mentor-scoped to assigned mentees. No public leaderboard, transfer or cash value is provided. The UI refreshes the mentee wallet every minute while visible and after task actions. This initial release does not award unverified case/simulator completions or browser-only/offline progress. Tests are included in `tests/backend.test.mjs`.

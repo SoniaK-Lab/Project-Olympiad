@@ -1,3 +1,4 @@
+import { coinRoute } from '../../../../lib/coins';
 import { forumRoute } from '../../../../lib/forum';
 import { callRoute } from '../../../../lib/calls';
 import { assignmentRoute } from '../../../../lib/assignments';
@@ -9,6 +10,7 @@ if(path[0]==='admin-demo-users'&&method==='POST'){if(actor.role!=='admin')throw 
 if(path[0]==='admin-views'&&method==='GET'){if(actor.role!=='admin')throw new HttpError(403,'فقط مدیر مجاز است');return response({members:(await db.prepare("SELECT id,name,role FROM members WHERE role IN ('mentor','student') ORDER BY role,name").all()).results})}
 const viewId=req.headers.get('X-Bridge-View-As');if(viewId){if(actor.role!=='admin')throw new HttpError(403,'تغییر نمای کاربر فقط برای مدیر مجاز است');const target=await db.prepare("SELECT * FROM members WHERE id=? AND role IN ('mentor','student')").bind(viewId).first<Member>();if(!target)throw new HttpError(404,'کاربر انتخاب‌شده پیدا نشد');me=target}
 if(path[0]==='me'&&method==='GET')return response({user:{id:me.id,name:me.name,email:me.email,role:me.role,mentorId:me.mentor_id},isAdmin:actor.role==='admin',viewAs:viewId||null});
+if(path[0]==='coins')return await coinRoute(req,path,me,actor);
 if(path[0]==='forum')return await forumRoute(req,path,me,actor);
 if(path[0]==='calls')return await callRoute(req,path,me);
 if(path[0]==='assignments')return await assignmentRoute(req,path,me,actor);
