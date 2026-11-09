@@ -15,7 +15,8 @@ const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s
  };
 }};
 let identity=null;
-function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date,TextEncoder,btoa});return exports}
+let turnFetch=async()=>{throw Error("Unexpected TURN request")};
+function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date,TextEncoder,btoa,AbortSignal,fetch:(...args)=>turnFetch(...args)});return exports}
 const env={DB};
 const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
@@ -128,6 +129,31 @@ assert.equal((await request(callPath+'?client=student-client-123')).status,409);
 login('mentor-id','mentor@example.test');assert.equal((await request(callPath+'?client=mentor-client-123')).data.peerClient,null);
 login('owner','owner@example.test');assert.equal((await request(callPath+'/join','POST',{client:'admin-client-123'})).status,403);
 console.log('PASS: call participant isolation, duplicate-device leases, signaling roles, cursors and leave cleanup');
+env.BRIDGE_CF_TURN_KEY_ID='test-key-id';
+env.BRIDGE_CF_TURN_API_TOKEN='test-token-only';
+let turnRequests=0;
+turnFetch=async(url,options)=>{
+ turnRequests++;
+ assert.equal(url,'https://rtc.live.cloudflare.com/v1/turn/keys/test-key-id/credentials/generate-ice-servers');
+ assert.equal(options.headers.Authorization,'Bearer test-token-only');
+ assert.equal(JSON.parse(options.body).ttl,7200);
+ return Response.json({iceServers:[{urls:['stun:stun.cloudflare.com:3478']},{urls:['turn:turn.cloudflare.com:53?transport=udp','turns:turn.cloudflare.com:443?transport=tcp'],username:'ephemeral-user',credential:'ephemeral-secret'}]});
+};
+login('other-id','other@example.test');
+assert.equal((await request(callPath+'/join','POST',{client:'unrelated-client'})).status,403);
+assert.equal(turnRequests,0);
+login('student-id','student@example.test');
+const managedJoin=await request(callPath+'/join','POST',{client:'managed-client-123'});
+assert.equal(managedJoin.status,200);
+assert.deepEqual(managedJoin.data.iceServers[1],{urls:['turns:turn.cloudflare.com:443?transport=tcp'],username:'ephemeral-user',credential:'ephemeral-secret'});
+assert.ok(!JSON.stringify(managedJoin.data).includes(env.BRIDGE_CF_TURN_API_TOKEN));
+assert.equal((await request(callPath+'/join','POST',{client:'duplicate-client'})).status,409);
+assert.equal(turnRequests,1);
+await request(callPath+'/leave','POST',{client:'managed-client-123'});
+delete env.BRIDGE_CF_TURN_KEY_ID;
+delete env.BRIDGE_CF_TURN_API_TOKEN;
+console.log('PASS: managed TURN credentials restricted to session participants, with blocked ports removed');
+
 
 login('student-id','student@example.test');
 let thread=await request('forum','POST',{title:'بحث تست پنومونی',body:'How do we prioritize clinical reasoning in this fictional case?',category:'کیس و استدلال'});assert.equal(thread.status,201,JSON.stringify(thread));const tid=thread.data.id;

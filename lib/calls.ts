@@ -3,8 +3,36 @@ import {database,HttpError,body,text,response,Member} from './bridge';
 const LEASE=45000,TTL=300000;
 const TURN_CREDENTIAL_SECONDS = 7200;
 
+async function cloudflareTurnServers(keyId: string, token: string): Promise<RTCIceServer[]> {
+ const res = await fetch(
+  'https://rtc.live.cloudflare.com/v1/turn/keys/' + encodeURIComponent(keyId) + '/credentials/generate-ice-servers',
+  {
+   method: 'POST',
+   headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+   body: JSON.stringify({ ttl: TURN_CREDENTIAL_SECONDS }),
+   signal: AbortSignal.timeout(3500),
+  },
+ );
+ if (!res.ok) throw new Error('TURN credential request failed');
+ const data = await res.json<{ iceServers?: RTCIceServer[] }>();
+ return (data.iceServers ?? []).flatMap(({ urls, username, credential }) => {
+  const relayUrls = [urls].flat().filter(url => /^turns?:/.test(url) && !/:53(?:[?]|$)/.test(url));
+  return relayUrls.length && username && credential ? [{ urls: relayUrls, username, credential }] : [];
+ });
+}
+
 async function callIceServers(memberId: string, now: number): Promise<RTCIceServer[]> {
  const servers: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+ const keyId = env.BRIDGE_CF_TURN_KEY_ID;
+ const token = env.BRIDGE_CF_TURN_API_TOKEN;
+ if (keyId && token) {
+  try {
+   const relay = await cloudflareTurnServers(keyId, token);
+   if (relay.length) return [...servers, ...relay];
+  } catch {
+   console.warn('Cloudflare TURN credentials unavailable; using the configured fallback');
+  }
+ }
  const urls = env.BRIDGE_TURN_URLS?.split(',').map(url => url.trim()).filter(Boolean) ?? [];
  const secret = env.BRIDGE_TURN_SHARED_SECRET;
  if (!secret || !urls.length || urls.some(url => !/^turns?:[^\s]+$/i.test(url))) return servers;
@@ -27,11 +55,10 @@ export async function callRoute(req:Request,path:string[],me:Member){
  const b=req.method==='GET'?null:await body(req),url=new URL(req.url),client=text(b?.client||url.searchParams.get('client'),10,80),now=Date.now(),slot=session.id+':'+me.id;
  if(!/^[a-zA-Z0-9-]+$/.test(client))throw new HttpError(400,'شناسهٔ اتصال نامعتبر است');
  if(req.method==='POST'&&path[2]==='join'){
-  const iceServers=await callIceServers(me.id,now);
   await db.prepare('DELETE FROM call_signals WHERE created<?').bind(now-TTL).run();
   const result=await db.prepare('INSERT INTO call_peers(id,session_id,member_id,client,updated) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET client=excluded.client,updated=excluded.updated WHERE call_peers.client=excluded.client OR call_peers.updated<?').bind(slot,session.id,me.id,client,now,now-LEASE).run();
   if(!result.meta.changes)throw new HttpError(409,'این حساب در پنجرهٔ دیگری وارد تماس است؛ از آن خارج شوید یا ۴۵ ثانیه صبر کنید');
-  return response({ok:true,initiator:me.id===session.mentor_id,iceServers});
+  return response({ok:true,initiator:me.id===session.mentor_id,iceServers:await callIceServers(me.id,now)});
  }
  if(req.method==='POST'&&path[2]==='leave'){
   await db.prepare('DELETE FROM call_peers WHERE id=? AND client=?').bind(slot,client).run();
