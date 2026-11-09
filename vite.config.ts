@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { configureToolEnvironment } from "./scripts/tool-environment.mjs";
-import { sites } from "./scripts/vite/sites-vite-plugin";
+import { localEmail, sites } from "./scripts/vite/sites-vite-plugin";
 import { connectorPreview } from "./scripts/vite/connector-preview-plugin.mjs";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -45,6 +45,7 @@ export default defineConfig(async ({ command }) => {
 
   return {
     server: {
+      ...(process.env.BRIDGE_LOCAL_D1_PATH ? { strictPort: true } : {}),
       ...(managedLinux
         ? { host: "0.0.0.0", allowedHosts: ["terminal.local"] }
         : {}),
@@ -59,8 +60,14 @@ export default defineConfig(async ({ command }) => {
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
+        ...(command === "serve" && process.env.BRIDGE_LOCAL_D1_PATH
+          ? { persistState: { path: process.env.BRIDGE_LOCAL_D1_PATH } }
+          : {}),
         config: {
           ...localBindingConfig,
+          ...(command === "serve" && !managedLinux
+            ? { vars: { BRIDGE_INITIAL_ADMIN_EMAIL: localEmail } }
+            : {}),
           ...(command === "serve"
             ? {
                 services: [

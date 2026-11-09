@@ -1,0 +1,27 @@
+name: Project checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: node tests/backend.test.mjs
+      - run: node tests/patient-engine.test.mjs
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run build
+      - run: bash scripts/smoke-local.sh

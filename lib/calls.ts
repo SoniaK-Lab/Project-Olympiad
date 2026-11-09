@@ -1,5 +1,22 @@
+import { env } from 'cloudflare:workers';
 import {database,HttpError,body,text,response,Member} from './bridge';
 const LEASE=45000,TTL=300000;
+const TURN_CREDENTIAL_SECONDS = 7200;
+
+async function callIceServers(memberId: string, now: number): Promise<RTCIceServer[]> {
+ const servers: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+ const urls = env.BRIDGE_TURN_URLS?.split(',').map(url => url.trim()).filter(Boolean) ?? [];
+ const secret = env.BRIDGE_TURN_SHARED_SECRET;
+ if (!secret || !urls.length || urls.some(url => !/^turns?:[^\s]+$/i.test(url))) return servers;
+
+ const username = `${Math.floor(now / 1000) + TURN_CREDENTIAL_SECONDS}:${memberId}`;
+ const encoder = new TextEncoder();
+ const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+ const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(username));
+ const credential = btoa(String.fromCharCode(...new Uint8Array(signature)));
+ servers.push({ urls, username, credential });
+ return servers;
+}
 // Only the assigned participants may exchange temporary WebRTC negotiation data.
 // Media travels between browsers and is never stored here.
 export async function callRoute(req:Request,path:string[],me:Member){
@@ -10,10 +27,11 @@ export async function callRoute(req:Request,path:string[],me:Member){
  const b=req.method==='GET'?null:await body(req),url=new URL(req.url),client=text(b?.client||url.searchParams.get('client'),10,80),now=Date.now(),slot=session.id+':'+me.id;
  if(!/^[a-zA-Z0-9-]+$/.test(client))throw new HttpError(400,'شناسهٔ اتصال نامعتبر است');
  if(req.method==='POST'&&path[2]==='join'){
+  const iceServers=await callIceServers(me.id,now);
   await db.prepare('DELETE FROM call_signals WHERE created<?').bind(now-TTL).run();
   const result=await db.prepare('INSERT INTO call_peers(id,session_id,member_id,client,updated) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET client=excluded.client,updated=excluded.updated WHERE call_peers.client=excluded.client OR call_peers.updated<?').bind(slot,session.id,me.id,client,now,now-LEASE).run();
   if(!result.meta.changes)throw new HttpError(409,'این حساب در پنجرهٔ دیگری وارد تماس است؛ از آن خارج شوید یا ۴۵ ثانیه صبر کنید');
-  return response({ok:true,initiator:me.id===session.mentor_id});
+  return response({ok:true,initiator:me.id===session.mentor_id,iceServers});
  }
  if(req.method==='POST'&&path[2]==='leave'){
   await db.prepare('DELETE FROM call_peers WHERE id=? AND client=?').bind(slot,client).run();
