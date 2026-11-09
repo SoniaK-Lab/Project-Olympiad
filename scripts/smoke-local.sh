@@ -22,7 +22,7 @@ done
 
 VINEXT_NO_DEV_LOCK=1 BRIDGE_LOCAL_D1_PATH="$state_dir" node node_modules/vinext/dist/cli.js dev --hostname 127.0.0.1 --port 5174 >"$log_file" 2>&1 &
 server_pid=$!
-if ! node tests/browser.test.mjs; then
+if ! (node tests/browser.test.mjs && node tests/call-browser.test.mjs); then
   cat "$log_file"
   exit 1
 fi
