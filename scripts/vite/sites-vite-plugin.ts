@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import type { Plugin } from "vite";
 
 const localUserId = "local_seedy";
-const localEmail = "seedy@sites.test";
+export const localEmail = "seedy@sites.test";
 const localFullName = "Seedy";
 const localCookieName = "__sites_local_auth";
 const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);

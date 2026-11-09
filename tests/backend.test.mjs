@@ -3,7 +3,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import assert from 'node:assert/strict';
-import {webcrypto} from 'node:crypto';
+import {createHmac,webcrypto} from 'node:crypto';
 const sql=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+file,'utf8').replaceAll('--> statement-breakpoint',''));
 const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const statement of statements)out.push(await statement.run());sql.exec('COMMIT');return out}catch(e){sql.exec('ROLLBACK');throw e}},prepare(query){
  let params=[];
@@ -15,17 +15,26 @@ const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s
  };
 }};
 let identity=null;
-function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date});return exports}
-const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
+let turnFetch=async()=>{throw Error("Unexpected TURN request")};
+function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date,TextEncoder,btoa,AbortSignal,fetch:(...args)=>turnFetch(...args)});return exports}
+const env={DB};
+const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
 const assignmentModule=moduleFrom('lib/assignments.ts',{'./bridge':bridge});
-const callModule=moduleFrom('lib/calls.ts',{'./bridge':bridge});
+const callModule=moduleFrom('lib/calls.ts',{'./bridge':bridge,'cloudflare:workers':{env}});
 const forumModule=moduleFrom('lib/forum.ts',{'./bridge':bridge});
 const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/forum':forumModule,'../../../../lib/calls':callModule,'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
+login('visitor','visitor@example.test');
+assert.equal((await request('me')).status,403);
+env.BRIDGE_INITIAL_ADMIN_EMAIL=' Owner@Example.Test ';
+assert.equal((await request('me')).status,403);
+assert.equal(sql.prepare('SELECT COUNT(*) AS total FROM members').get().total,0);
 login('owner','owner@example.test');assert.equal((await request('me')).data.user.role,'admin');
+delete env.BRIDGE_INITIAL_ADMIN_EMAIL;
+assert.equal((await request('me')).data.user.role,'admin');
 const create=async(email,role,mentorId)=>{const r=await request('members','POST',{email,role,mentorId,name:email});assert.equal(r.status,201,JSON.stringify(r));return r.data.id};
 const mentor=await create('mentor@example.test','mentor');const mentor2=await create('mentor2@example.test','mentor');const student=await create('student@example.test','student',mentor);const other=await create('other@example.test','student',mentor2);
 assert.equal((await request('members','POST',{email:'evil@example.test',name:'evil',role:'admin'})).status,400);
@@ -91,11 +100,22 @@ console.log('PASS: authentication, bootstrap, enrollment, role permissions, stud
 
 login('student-id','student@example.test');
 const callPath='calls/'+sid;
-assert.equal((await request(callPath+'/join','POST',{client:'student-client-123'})).status,200);
+const directJoin=await request(callPath+'/join','POST',{client:'student-client-123'});
+assert.equal(directJoin.status,200);
+assert.equal(directJoin.data.iceServers.length,1);
+env.BRIDGE_TURN_URLS='turn:relay.example.test:3478, turns:relay.example.test:5349';
+env.BRIDGE_TURN_SHARED_SECRET='test-secret-only';
 assert.equal((await request(callPath+'/join','POST',{client:'second-window-123'})).status,409);
 login('other-id','other@example.test');assert.equal((await request(callPath+'?client=unrelated-client')).status,403);
 login('mentor-id','mentor@example.test');
-assert.equal((await request(callPath+'/join','POST',{client:'mentor-client-123'})).status,200);
+const relayJoin=await request(callPath+'/join','POST',{client:'mentor-client-123'});
+assert.equal(relayJoin.status,200);
+const relay=relayJoin.data.iceServers[1];
+assert.deepEqual(relay.urls,['turn:relay.example.test:3478','turns:relay.example.test:5349']);
+assert.equal(relay.username.split(':')[1],mentor);
+assert.ok(Number(relay.username.split(':')[0])>Math.floor(Date.now()/1000)+7100);
+assert.equal(relay.credential,createHmac('sha1',env.BRIDGE_TURN_SHARED_SECRET).update(relay.username).digest('base64'));
+assert.ok(!JSON.stringify(relayJoin.data).includes(env.BRIDGE_TURN_SHARED_SECRET));
 assert.equal((await request(callPath+'?client=mentor-client-123')).data.peerClient,'student-client-123');
 assert.equal((await request(callPath+'/signal','POST',{client:'mentor-client-123',targetClient:'wrong-client',signal:{type:'offer',sdp:'v=0\r\n'}})).status,409);
 assert.equal((await request(callPath+'/signal','POST',{client:'mentor-client-123',targetClient:'student-client-123',signal:{type:'offer',sdp:'v=0\r\n'}})).status,200);
@@ -109,6 +129,31 @@ assert.equal((await request(callPath+'?client=student-client-123')).status,409);
 login('mentor-id','mentor@example.test');assert.equal((await request(callPath+'?client=mentor-client-123')).data.peerClient,null);
 login('owner','owner@example.test');assert.equal((await request(callPath+'/join','POST',{client:'admin-client-123'})).status,403);
 console.log('PASS: call participant isolation, duplicate-device leases, signaling roles, cursors and leave cleanup');
+env.BRIDGE_CF_TURN_KEY_ID='test-key-id';
+env.BRIDGE_CF_TURN_API_TOKEN='test-token-only';
+let turnRequests=0;
+turnFetch=async(url,options)=>{
+ turnRequests++;
+ assert.equal(url,'https://rtc.live.cloudflare.com/v1/turn/keys/test-key-id/credentials/generate-ice-servers');
+ assert.equal(options.headers.Authorization,'Bearer test-token-only');
+ assert.equal(JSON.parse(options.body).ttl,7200);
+ return Response.json({iceServers:[{urls:['stun:stun.cloudflare.com:3478']},{urls:['turn:turn.cloudflare.com:53?transport=udp','turns:turn.cloudflare.com:443?transport=tcp'],username:'ephemeral-user',credential:'ephemeral-secret'}]});
+};
+login('other-id','other@example.test');
+assert.equal((await request(callPath+'/join','POST',{client:'unrelated-client'})).status,403);
+assert.equal(turnRequests,0);
+login('student-id','student@example.test');
+const managedJoin=await request(callPath+'/join','POST',{client:'managed-client-123'});
+assert.equal(managedJoin.status,200);
+assert.deepEqual(managedJoin.data.iceServers[1],{urls:['turns:turn.cloudflare.com:443?transport=tcp'],username:'ephemeral-user',credential:'ephemeral-secret'});
+assert.ok(!JSON.stringify(managedJoin.data).includes(env.BRIDGE_CF_TURN_API_TOKEN));
+assert.equal((await request(callPath+'/join','POST',{client:'duplicate-client'})).status,409);
+assert.equal(turnRequests,1);
+await request(callPath+'/leave','POST',{client:'managed-client-123'});
+delete env.BRIDGE_CF_TURN_KEY_ID;
+delete env.BRIDGE_CF_TURN_API_TOKEN;
+console.log('PASS: managed TURN credentials restricted to session participants, with blocked ports removed');
+
 
 login('student-id','student@example.test');
 let thread=await request('forum','POST',{title:'بحث تست پنومونی',body:'How do we prioritize clinical reasoning in this fictional case?',category:'کیس و استدلال'});assert.equal(thread.status,201,JSON.stringify(thread));const tid=thread.data.id;
