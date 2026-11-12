@@ -14,14 +14,15 @@ const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s
   async run(){return {meta:{changes:Number(sql.prepare(query).run(...params).changes)}}}
  };
 }};
-let identity=null;
-function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date});return exports}
-const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
+let identity=null,cookie='';
+function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,TextEncoder,btoa,console,Date});return exports}
+const access=moduleFrom('app/access-cookie.ts',{'next/headers':{headers:async()=>new Map([['cookie',cookie]])}});
+const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity},'../app/access-cookie':access});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
 const assignmentModule=moduleFrom('lib/assignments.ts',{'./bridge':bridge});
 const callModule=moduleFrom('lib/calls.ts',{'./bridge':bridge});
 const forumModule=moduleFrom('lib/forum.ts',{'./bridge':bridge});
-const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/forum':forumModule,'../../../../lib/calls':callModule,'../../../../lib/bridge':bridge,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
+const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/forum':forumModule,'../../../../lib/calls':callModule,'../../../../lib/bridge':bridge,'../../../access-cookie':access,'../../../../lib/learning-stats':statsModule,'../../../../lib/assignments':assignmentModule});
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
@@ -136,3 +137,38 @@ assert.equal((await request('forum/'+tid,'DELETE',{})).status,200);
 assert.equal((await request('forum/'+tid)).status,404);
 assert.equal((await request('forum')).data.topics.length,0);
 console.log('PASS: forum cross-mentee discussion, mentor denial, ownership, moderation conflicts, locked replies, escaped search, idempotent votes and soft deletion');
+
+// Personal sign-in links
+{
+ const enterModule=moduleFrom('app/enter/[token]/route.ts',{'../../../lib/bridge':bridge,'../../access-cookie':access});
+ const exitModule=moduleFrom('app/exit/route.ts',{'../access-cookie':access});
+ login('owner','owner@example.test');
+ const mentorId=(await request('members')).data.members.find(m=>m.email==='mentor@example.test').id;
+ const studentId=(await request('members')).data.members.find(m=>m.email==='student@example.test').id;
+ assert.equal((await request('members/'+mentorId+'/link','POST',{},'https://evil.test')).status,403);
+ assert.equal((await request('members/nope/link','POST',{})).status,404);
+ const mk=await request('members/'+studentId+'/link','POST',{});assert.equal(mk.status,201);
+ const key=mk.data.url.split('/enter/')[1];assert.match(key,/^[A-Za-z0-9_-]{43}$/);
+ assert.equal((await request('members')).data.members.find(m=>m.id===studentId).has_link,1);
+ assert.ok(!JSON.stringify(sql.prepare('SELECT * FROM access_links').all()).includes(key),'raw key must not be stored');
+ const enter=k=>enterModule.GET(new Request('https://test.local/enter/'+k));
+ identity=null;cookie='';assert.equal((await request('me')).status,401);
+ assert.equal((await enter('x'.repeat(43))).status,403);
+ const ok=await enter(key);assert.equal(ok.status,302);assert.equal(ok.headers.get('Location'),'/');
+ const setCookie=ok.headers.get('Set-Cookie');assert.match(setCookie,/HttpOnly; Secure; SameSite=Lax/);
+ cookie=setCookie.split(';')[0];
+ let me=await request('me');assert.equal(me.status,200);assert.equal(me.data.user.id,studentId);assert.equal(me.data.via,'link');assert.equal(me.data.isAdmin,false);
+ assert.equal((await request('members','POST',{email:'z@example.test',name:'z',role:'mentor'})).status,403);
+ assert.equal((await request('members/'+studentId+'/link','POST',{})).status,403);
+ cookie='bridge_access='+'A'.repeat(43);assert.equal((await request('me')).status,401);
+ cookie=setCookie.split(';')[0];
+ login('owner','owner@example.test');assert.equal((await request('members')).data.members.find(m=>m.id===studentId).active,1);
+ const mk2=await request('members/'+studentId+'/link','POST',{});const key2=mk2.data.url.split('/enter/')[1];
+ identity=null;assert.equal((await request('me')).status,401,'old link revoked by regeneration');
+ assert.equal((await enter(key)).status,403);
+ cookie='bridge_access='+key2;assert.equal((await request('me')).status,200);
+ login('owner','owner@example.test');cookie='';assert.equal((await request('members/'+studentId+'/link','DELETE',{})).status,200);
+ identity=null;cookie='bridge_access='+key2;assert.equal((await request('me')).status,401,'revoked link');
+ const out=await exitModule.GET();assert.match(out.headers.get('Set-Cookie'),/Max-Age=0/);
+ console.log('PASS: personal sign-in links (hashed storage, cookie login, admin-only creation, regeneration and revocation)');
+}
