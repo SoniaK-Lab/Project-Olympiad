@@ -1,0 +1,17 @@
+import {readFileSync} from 'node:fs';import vm from 'node:vm';import ts from 'typescript';import assert from 'node:assert/strict';
+function load(path,imports={}){const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,require:n=>{if(!(n in imports))throw Error(n);return imports[n]},URL,Response,Request,encodeURIComponent});return exports}
+const html=readFileSync('source-ui/login.html','utf8');
+const login=load('app/login/route.ts',{'../../source-ui/login-page':{loginPage:html}});
+let r=await login.GET(new Request('https://bridge.test/login'));assert.equal(r.status,200);assert.equal(r.headers.get('Cache-Control'),'no-store');assert.equal(await r.text(),html);assert.ok(!html.includes('signin-with-chatgpt'));assert.ok(!html.includes('type="email"'));
+const fields={};for(const id of ['authForm','nationalId','password','confirmPassword','authError','authSubmit','loginTab','registerTab','confirmGroup','authIntro','authNote'])fields[id]={value:'',textContent:'',disabled:false,required:false,hidden:false,setAttribute(){},setCustomValidity(){},focus(){this.focused=true}};
+let sent=null,navigated=null;
+const location={href:'https://bridge.test/login?return_to=https://evil.test',origin:'https://bridge.test',assign:v=>navigated=v};
+const context={document:{getElementById:id=>fields[id]},location,URL,Error,SyntaxError,fetch:async(url,args)=>{sent={url,args};return {ok:true,json:async()=>({ok:true})}}};vm.createContext(context);vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],context);
+fields.registerTab.onclick();assert.equal(fields.confirmGroup.hidden,false);assert.equal(fields.confirmPassword.required,true);assert.equal(fields.password.autocomplete,'new-password');
+fields.nationalId.value='۰۰۱۲۳۴۵۶۷۸';fields.nationalId.oninput();assert.equal(fields.nationalId.value,'0012345678');
+fields.password.value='test-password';fields.confirmPassword.value='mismatch';await fields.authForm.onsubmit({preventDefault(){}});assert.equal(sent,null);assert.match(fields.authError.textContent,/یکسان/);
+fields.confirmPassword.value='test-password';await fields.authForm.onsubmit({preventDefault(){}});assert.equal(sent.url,'/api/auth/register');assert.equal(JSON.parse(sent.args.body).confirmPassword,'test-password');assert.equal(navigated,'/ui');assert.equal(fields.password.value,'');
+fields.loginTab.onclick();assert.equal(fields.confirmPassword.disabled,true);assert.equal(fields.confirmGroup.hidden,true);assert.equal(fields.password.autocomplete,'current-password');
+location.href='https://bridge.test/login?return_to=%2Fui%3Fsession%3Dabc';fields.password.value='test-password';await fields.authForm.onsubmit({preventDefault(){}});assert.equal(sent.url,'/api/auth/login');assert.equal('confirmPassword' in JSON.parse(sent.args.body),false);assert.equal(navigated,'/ui?session=abc');
+let member=null;const ui=load('app/ui/route.ts',{'../../lib/password-auth':{passwordMember:async()=>member},'../../source-ui/document':{html:'<main>dashboard</main>'}});r=await ui.GET(new Request('https://bridge.test/ui?session=abc'));assert.equal(r.status,303);assert.equal(r.headers.get('Location'),'/login?return_to=%2Fui%3Fsession%3Dabc');member={id:'test'};assert.equal(await (await ui.GET(new Request('https://bridge.test/ui'))).text(),'<main>dashboard</main>');
+console.log('PASS: three-field registration, Persian digits, confirmation errors, login mode, safe return URL and session-required dashboard');

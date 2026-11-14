@@ -1,0 +1,40 @@
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync,readdirSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+import assert from 'node:assert/strict';
+import {webcrypto} from 'node:crypto';
+const sql=new DatabaseSync(':memory:');
+for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync('drizzle/'+f,'utf8').replaceAll('--> statement-breakpoint',''));
+const DB={prepare(query){let p=[];return {bind(...v){p=v;return this},async first(){return sql.prepare(query).get(...p)||null},async run(){return {meta:{changes:Number(sql.prepare(query).run(...p).changes)}}}}},async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());sql.exec('COMMIT');return out}catch(e){sql.exec('ROLLBACK');throw e}}};
+let cookie=null,host=null;
+function load(path,imports){const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,require:n=>{if(!(n in imports))throw Error(n);return imports[n]},Response,Request,URL,TextEncoder,Uint8Array,crypto:webcrypto,console,Date});return exports}
+const auth=load('lib/password-auth.ts',{'cloudflare:workers':{env:{DB}},'next/headers':{headers:async()=>new Headers(cookie?{cookie}:{})}});
+const bridge=load('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'./password-auth':auth});
+const route=load('app/api/auth/[action]/route.ts',{'../../../chatgpt-auth':{getChatGPTUser:async()=>host},'../../../../lib/bridge':bridge,'../../../../lib/password-auth':auth});
+const password='a strong test password';
+const code=n=>{const s=String(n).padStart(9,'0'),r=[...s].reduce((a,c,i)=>a+Number(c)*(10-i),0)%11;return s+(r<2?r:11-r)};
+const id=code(12345678),other=code(12345679);
+async function request(action,data={},origin='https://test.local',ip='test-one'){const r=await route.POST(new Request('https://test.local/api/auth/'+action,{method:'POST',headers:{origin,'content-type':'application/json','cf-connecting-ip':ip,...(cookie?{cookie}:{})},body:JSON.stringify(data)}));return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')}}
+assert.equal(auth.nationalCode(id.replace(/\d/g,c=>'۰۱۲۳۴۵۶۷۸۹'[Number(c)])),id);
+assert.throws(()=>auth.nationalCode('1111111111'));assert.throws(()=>auth.nationalCode('1234567890'));
+assert.equal((await request('register',{nationalId:id,password,confirmPassword:'wrong'})).status,400);
+assert.equal((await request('register',{nationalId:id,password:'short',confirmPassword:'short'})).status,400);
+assert.equal((await request('register',{nationalId:id,password,confirmPassword:password},'https://evil.test')).status,403);
+assert.equal((await request('register',null)).status,400);
+let r=await request('register',{nationalId:id,password,confirmPassword:password,role:'admin'});assert.equal(r.status,201);assert.match(r.cookie,/HttpOnly/);assert.match(r.cookie,/Secure/);assert.match(r.cookie,/SameSite=Lax/);cookie=r.cookie.split(';')[0];
+const member=await bridge.currentMember();assert.equal(member.role,'student');assert.equal(member.identity,null);assert.equal((await auth.passwordMember(cookie)).id,member.id);
+const row=sql.prepare('SELECT * FROM auth_accounts').get();assert.notEqual(row.password_hash,password);assert.equal(row.password_hash.length,64);assert.equal(sql.prepare('SELECT token_hash FROM auth_sessions').get().token_hash.includes(cookie.split('=')[1]),false);
+assert.equal((await request('register',{nationalId:id,password,confirmPassword:password})).status,409);
+assert.equal((await request('login',{nationalId:id,password:'wrong password'})).status,401);
+assert.equal((await request('login',{nationalId:other,password})).status,401);
+r=await request('logout');assert.equal(r.status,200);assert.match(r.cookie,/Max-Age=0/);assert.equal(await auth.passwordMember(cookie),null);cookie=null;
+r=await request('login',{nationalId:id,password});assert.equal(r.status,200);cookie=r.cookie.split(';')[0];assert.equal((await bridge.currentMember()).id,member.id);
+sql.prepare('UPDATE auth_sessions SET expires_at=0').run();assert.equal(await auth.passwordMember(cookie),null);cookie=null;
+// A trusted existing identity migrates its own role and data, never by supplied national code.
+sql.prepare("INSERT INTO members(id,identity,email,name,role,created) VALUES('owner','host-owner','owner@example.test','Owner','admin','today')").run();host={userId:'host-owner',email:'owner@example.test'};
+r=await request('register',{nationalId:other,password,confirmPassword:password});assert.equal(r.status,201);cookie=r.cookie.split(';')[0];assert.equal((await bridge.currentMember()).id,'owner');
+assert.equal((await request('register',{nationalId:code(12345680),password,confirmPassword:password})).status,409);cookie=null;host=null;
+for(let i=0;i<11;i++)r=await request('login',{nationalId:code(98765432),password:'wrong password'},'https://test.local','rate-test');assert.equal(r.status,429);
+assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM members WHERE role=\'admin\'').get().n,1);
+console.log('PASS: national ID normalization/checksum, password confirmation, automatic student registration, duplicate protection, hashing, session expiry/revocation, CSRF, role safety, trusted account migration and durable throttling');

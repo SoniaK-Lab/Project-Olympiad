@@ -16,7 +16,7 @@ const DB={async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s
 }};
 let identity=null;
 function moduleFrom(path,imports){const exports={};const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:n=>{if(!(n in imports))throw new Error('Unexpected import '+n);return imports[n]},Response,Request,URL,crypto:webcrypto,console,Date});return exports}
-const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'../app/chatgpt-auth':{getChatGPTUser:async()=>identity}});
+const bridge=moduleFrom('lib/bridge.ts',{'cloudflare:workers':{env:{DB}},'./password-auth':{passwordMember:async()=>{if(!identity)return null;let m=sql.prepare('SELECT * FROM members WHERE identity=? OR email=?').get(identity.userId,identity.email);if(m&&!m.identity){sql.prepare('UPDATE members SET identity=? WHERE id=?').run(identity.userId,m.id);m={...m,identity:identity.userId}}return m}}});
 const statsModule=moduleFrom('lib/learning-stats.ts',{});
 const assignmentModule=moduleFrom('lib/assignments.ts',{'./bridge':bridge});
 const callModule=moduleFrom('lib/calls.ts',{'./bridge':bridge});
@@ -25,6 +25,7 @@ const api=moduleFrom('app/api/bridge/[...path]/route.ts',{'../../../../lib/forum
 const login=(id,email)=>identity={userId:id,email,displayName:id};
 async function request(path,method='GET',body,origin='https://test.local',viewAs=null){const response=await api[method](new Request('https://test.local/api/bridge/'+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(viewAs?{'X-Bridge-View-As':viewAs}:{})},body:body?JSON.stringify(body):undefined}));return {status:response.status,data:await response.json()}}
 assert.equal((await request('me')).status,401);
+sql.prepare("INSERT INTO members(id,identity,email,name,role,created) VALUES('owner','owner','owner@example.test','Owner','admin','2026-01-01')").run();
 login('owner','owner@example.test');assert.equal((await request('me')).data.user.role,'admin');
 const create=async(email,role,mentorId)=>{const r=await request('members','POST',{email,role,mentorId,name:email});assert.equal(r.status,201,JSON.stringify(r));return r.data.id};
 const mentor=await create('mentor@example.test','mentor');const mentor2=await create('mentor2@example.test','mentor');const student=await create('student@example.test','student',mentor);const other=await create('other@example.test','student',mentor2);
@@ -42,7 +43,7 @@ login('mentor-id','mentor@example.test');assert.equal((await request('sessions/'
 login('student-id','student@example.test');r=await request('sessions');assert.equal(r.data.sessions[0].confirmed,0);assert.equal((await request('sessions/'+sid+'/attendance','POST',{version:1})).status,409);assert.equal((await request('sessions/'+sid+'/attendance','POST',{version:2})).status,200);
 assert.equal((await request('progress','PUT',{data:{note:'test'},version:0})).status,200);assert.equal((await request('progress','PUT',{data:{note:'stale'},version:0})).status,409);
 login('other-id','other@example.test');assert.equal((await request('progress')).data.data,null);
-login('unlisted','unlisted@example.test');assert.equal((await request('me')).status,403);
+login('unlisted','unlisted@example.test');assert.equal((await request('me')).status,401);
 login('owner','owner@example.test');
 assert.equal((await request('admin-views')).data.members.length,4);
 const preview=await request('me','GET',undefined,'https://test.local',student);
