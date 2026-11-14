@@ -27,13 +27,14 @@ async function pending(request,db){const value=token(request,true);if(!value)ret
 async function signup(request,env){
  const data=await readBody(request),db=env.DB;await limited(db,'signup:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),10);
  await db.batch([db.prepare('DELETE FROM cb_pending_signups WHERE expires<?').bind(Date.now()),db.prepare('DELETE FROM cb_auth_limits WHERE bucket<?').bind(Math.floor(Date.now()/900000)-2)]);
+ const role=data.role??'student';if(!['student','mentor'].includes(role))fail(400,'نقش معتبر انتخاب کنید: دانشجو یا منتور.');
  const nationalId=nationalCode(data.nationalId),email=typeof data.email==='string'?data.email.trim().toLowerCase():'';
  if(email.length>254||!/^\S+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'ایمیل معتبر وارد کنید.');
  const password=data.password;if(typeof password!=='string'||password.length<8||password.length>128)fail(400,'رمز عبور باید بین ۸ تا ۱۲۸ نویسه باشد.');if(password!==data.confirmPassword)fail(400,'رمز عبور و تکرار آن یکسان نیستند.');
  await limited(db,'signup:email:'+email,5);
  if(await db.prepare('SELECT id FROM cb_accounts WHERE national_id=? OR (email=? AND national_id IS NOT NULL)').bind(nationalId,email).first())fail(409,'برای این کد ملی یا ایمیل قبلاً حساب ساخته شده است؛ وارد شوید.');
  const value=random(),salt=random(),hash=await passwordHash(password,salt);
- await db.prepare('INSERT INTO cb_pending_signups(token_hash,national_id,email,password_hash,salt,expires,used) VALUES(?,?,?,?,?,?,0)').bind(await digest(value),nationalId,email,hash,salt,Date.now()+PENDING_AGE*1000).run();
+ await db.prepare('INSERT INTO cb_pending_signups(token_hash,national_id,email,password_hash,salt,expires,used,role) VALUES(?,?,?,?,?,?,0,?)').bind(await digest(value),nationalId,email,hash,salt,Date.now()+PENDING_AGE*1000,role).run();
  const result=json({ok:true,verificationRequired:true,redirect:'/verify-email'},202);result.headers.append('Set-Cookie',cookie(request,value,PENDING_AGE,true));return result;
 }
 async function login(request,env){const data=await readBody(request),db=env.DB;await limited(db,'login:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),40);const code=nationalCode(data.nationalId);await limited(db,'login:account:'+code,10);if(typeof data.password!=='string'||data.password.length<8||data.password.length>128)fail(401,'کد ملی یا رمز عبور اشتباه است.');const a=await db.prepare('SELECT * FROM cb_accounts WHERE national_id=?').bind(code).first();const hash=await passwordHash(data.password,a?.salt||'clinical-bridge-dummy-salt');if(!a||!equal(hash,a.password_hash))fail(401,'کد ملی یا رمز عبور اشتباه است.');if(!a.verified_at)fail(403,'ابتدا ایمیل حساب را تأیید کنید.');return startSession(request,db,a.id,json({ok:true,redirect:'/dashboard'}));}
@@ -49,7 +50,7 @@ async function accessCallback(request,env,runtime){
   let member=await db.prepare('SELECT * FROM members WHERE lower(email)=?').bind(email).first();
   const identity=member?.identity||account?.identity||user.userId;
   const statements=[];
-  if(!member){member={id:crypto.randomUUID(),identity,name:email.split('@')[0]};statements.push(db.prepare("INSERT INTO members(id,identity,email,name,role,created) VALUES(?,?,?,?,'student',?)").bind(member.id,identity,email,member.name,now));}
+  if(!member){member={id:crypto.randomUUID(),identity,name:email.split('@')[0]};statements.push(db.prepare("INSERT INTO members(id,identity,email,name,role,created) VALUES(?,?,?,?,?,?)").bind(member.id,identity,email,member.name,signup.role==='mentor'?'mentor':'student',now));}
   else if(!member.identity)statements.push(db.prepare('UPDATE members SET identity=? WHERE id=? AND identity IS NULL').bind(identity,member.id));
   if(account)statements.push(db.prepare('UPDATE cb_accounts SET national_id=?,password_hash=?,salt=?,verified_at=?,identity=? WHERE id=? AND national_id IS NULL').bind(signup.national_id,signup.password_hash,signup.salt,now,identity,account.id));
   else{account={id:crypto.randomUUID()};statements.push(db.prepare('INSERT INTO cb_accounts(id,identity,email,name,password_hash,salt,created,national_id,verified_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(account.id,identity,email,member.name,signup.password_hash,signup.salt,now,signup.national_id,now));}
