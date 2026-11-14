@@ -1,4 +1,5 @@
 import original from './entry.mjs';
+import { sharedTheme } from './theme.mjs';
 const manifest={id:'/',name:'پل بالینی',short_name:'پل بالینی',description:'جلسات، یادگیری و ارتباط بالینی در موبایل شما',lang:'fa',dir:'rtl',start_url:'/?source=app',scope:'/',display:'standalone',background_color:'#f3f7fc',theme_color:'#123e5a',icons:[192,512].map(size=>({src:`/mobile/icon-${size}.png`,sizes:`${size}x${size}`,type:'image/png',purpose:'any maskable'}))};
 const offline=`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>اتصال قطع است | پل بالینی</title><style>body{font:17px Tahoma,sans-serif;background:#f3f7fc;color:#123e5a;display:grid;place-items:center;min-height:90vh;margin:0}main{max-width:380px;padding:32px;line-height:2}a{display:inline-block;background:#123e5a;color:white;padding:12px 24px;border-radius:14px;text-decoration:none}</style><main><h1>اتصال اینترنت قطع است</h1><p>برای ورود، مشاهدهٔ جلسات و ذخیرهٔ تغییرات به اینترنت نیاز دارید. پس از اتصال دوباره تلاش کنید.</p><a href="/">تلاش دوباره</a></main></html>`;
 const serviceWorker=`const CACHE='clinical-bridge-public-v1';
@@ -13,14 +14,15 @@ const style=`#cb-mobile-install{position:fixed;z-index:9000;inset-inline-end:16p
 function decorateHtml(html){
  if(html.includes('id="cb-mobile-install-loader"'))return html;
  const head='<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#123e5a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="پل بالینی"><link rel="apple-touch-icon" href="/mobile/icon-192.png"><style>'+style+'</style>';
- return html.replace('</head>',head+'</head>').replace('</body>','<script id="cb-mobile-install-loader" src="/mobile/install.js?v=2" defer></script></body>');
+ const themed=html.replace(/<style id="professional-palette">[\s\S]*?<\/style>/,'');
+ return themed.replace('</head>',head+'</head>').replace('</body>','<link id="cb-shared-theme" rel="stylesheet" href="/mobile/theme.css?v=20261114-blue">'+'<script id="cb-mobile-install-loader" src="/mobile/install.js?v=2" defer></script></body>');
 }
 function withMobileApp(original,assets={}){return {async fetch(request,env,ctx){
  const path=new URL(request.url).pathname;
- const textAssets={'/manifest.webmanifest':['application/manifest+json; charset=utf-8',JSON.stringify(manifest)],'/sw.js':['text/javascript; charset=utf-8',serviceWorker],'/mobile/install.js':['text/javascript; charset=utf-8',installScript],'/mobile/offline.html':['text/html; charset=utf-8',offline]};
+ const textAssets={'/mobile/theme.css':['text/css; charset=utf-8',sharedTheme],'/manifest.webmanifest':['application/manifest+json; charset=utf-8',JSON.stringify(manifest)],'/sw.js':['text/javascript; charset=utf-8',serviceWorker],'/mobile/install.js':['text/javascript; charset=utf-8',installScript],'/mobile/offline.html':['text/html; charset=utf-8',offline]};
  const resource=textAssets[path]||assets[path];
  if(resource){if(!['GET','HEAD'].includes(request.method))return new Response(null,{status:405,headers:{Allow:'GET, HEAD'}});
- const headers=new Headers({'Content-Type':resource[0],'Cache-Control':path==='/sw.js'?'no-cache':'public, max-age=300','X-Content-Type-Options':'nosniff'});if(path==='/sw.js')headers.set('Service-Worker-Allowed','/');
+ const headers=new Headers({'Content-Type':resource[0],'Cache-Control':['/sw.js','/mobile/theme.css'].includes(path)?'no-cache':'public, max-age=300','X-Content-Type-Options':'nosniff'});if(path==='/sw.js')headers.set('Service-Worker-Allowed','/');
  const content=textAssets[path]?resource[1]:Uint8Array.from(atob(resource[1]),c=>c.charCodeAt(0));return new Response(request.method==='HEAD'?null:content,{headers});}
  const response=await original.fetch(request,env,ctx);
  if(request.method==='HEAD'||!response.headers.get('Content-Type')?.includes('text/html')||response.status!==200)return response;
