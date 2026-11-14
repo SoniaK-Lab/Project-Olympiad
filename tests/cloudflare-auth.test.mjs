@@ -30,6 +30,8 @@ verifiedEmail='other@example.test';r=await req('/access-login','GET',null,{'Cf-A
 verifiedEmail='learner@example.test';r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.status,303);assert.equal(r.headers.get('location'),'/dashboard');cookie=cookies(r);
 assert.equal(sql.prepare('SELECT role FROM members').get().role,'student');assert.ok(sql.prepare('SELECT verified_at FROM cb_accounts').get().verified_at);
 r=await req('/api/dashboard');assert.equal(r.status,200);let summary=await r.json();assert.equal(summary.profile.emailVerified,true);assert.equal(summary.stats.sessions,0);assert.equal(summary.profile.mentor,null);
+r=await req('/dashboard');assert.equal(r.status,303);assert.equal(r.headers.get('location'),'/ui?view=dashboard');
+r=await req('/dashboard?embedded=1');assert.equal(r.status,200);assert.match(r.headers.get('Content-Security-Policy'),/frame-ancestors 'self'/);const embedded=await r.text();assert.match(embedded,/<base target="_top">/);assert.match(embedded,/bridge-dashboard-height/);
 r=await req('/ui?view=sessions','GET',null,{'oai-authenticated-user-id':'forged-admin'});assert.equal(r.status,200);assert.equal(passedHeaders.get('oai-authenticated-user-id'),null);assert.equal(contextIdentity.email,'learner@example.test');assert.match(await r.text(),/داشبورد/);
 r=await req('/api/local-auth/logout','POST');assert.equal(r.status,200);r=await req('/api/dashboard');assert.equal(r.status,401);cookie='';
 r=await req('/api/local-auth/login','POST',{nationalId:id,password:'wrong password'});assert.equal(r.status,401);
