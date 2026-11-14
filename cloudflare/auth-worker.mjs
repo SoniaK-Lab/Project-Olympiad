@@ -7,9 +7,10 @@ const hex=bytes=>Array.from(new Uint8Array(bytes),n=>n.toString(16).padStart(2,'
 const random=()=>hex(crypto.getRandomValues(new Uint8Array(32)));
 const digest=async value=>hex(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status})};
+const normalizeCode=value=>typeof value==='string'?value.trim().replace(/[۰-۹]/g,c=>String(c.charCodeAt(0)-1776)).replace(/[٠-٩]/g,c=>String(c.charCodeAt(0)-1632)):'';
 export function nationalCode(value){
  if(typeof value!=='string')fail(400,'کد ملی ۱۰ رقمی را وارد کنید.');
- const code=value.trim().replace(/[۰-۹]/g,c=>String(c.charCodeAt(0)-1776)).replace(/[٠-٩]/g,c=>String(c.charCodeAt(0)-1632));
+ const code=normalizeCode(value);
  if(!/^\d{10}$/.test(code)||/^(\d)\1{9}$/.test(code))fail(400,'کد ملی معتبر نیست.');
  const sum=[...code.slice(0,9)].reduce((a,c,i)=>a+Number(c)*(10-i),0)%11;
  if(Number(code[9])!==(sum<2?sum:11-sum))fail(400,'کد ملی معتبر نیست.');return code;
@@ -37,7 +38,7 @@ async function signup(request,env){
  await db.prepare('INSERT INTO cb_pending_signups(token_hash,national_id,email,password_hash,salt,expires,used,role) VALUES(?,?,?,?,?,?,0,?)').bind(await digest(value),nationalId,email,hash,salt,Date.now()+PENDING_AGE*1000,role).run();
  const result=json({ok:true,verificationRequired:true,redirect:'/verify-email'},202);result.headers.append('Set-Cookie',cookie(request,value,PENDING_AGE,true));return result;
 }
-async function login(request,env){const data=await readBody(request),db=env.DB;await limited(db,'login:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),40);const code=nationalCode(data.nationalId);await limited(db,'login:account:'+code,10);if(typeof data.password!=='string'||data.password.length<8||data.password.length>128)fail(401,'کد ملی یا رمز عبور اشتباه است.');const a=await db.prepare('SELECT * FROM cb_accounts WHERE national_id=?').bind(code).first();const hash=await passwordHash(data.password,a?.salt||'clinical-bridge-dummy-salt');if(!a||!equal(hash,a.password_hash))fail(401,'کد ملی یا رمز عبور اشتباه است.');if(!a.verified_at)fail(403,'ابتدا ایمیل حساب را تأیید کنید.');return startSession(request,db,a.id,json({ok:true,redirect:'/dashboard'}));}
+async function login(request,env){const data=await readBody(request),db=env.DB;await limited(db,'login:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),40);const raw=normalizeCode(data.nationalId),adminAlias=typeof env.ADMIN_LOGIN_CODE==='string'&&raw===env.ADMIN_LOGIN_CODE;const code=adminAlias?raw:nationalCode(data.nationalId);await limited(db,'login:account:'+code,10);if(typeof data.password!=='string'||data.password.length<8||data.password.length>128)fail(401,'کد ملی یا رمز عبور اشتباه است.');const a=await db.prepare('SELECT a.*,m.role AS member_role FROM cb_accounts a JOIN members m ON m.identity=a.identity WHERE a.national_id=?').bind(code).first();const hash=await passwordHash(data.password,a?.salt||'clinical-bridge-dummy-salt');if(!a||!equal(hash,a.password_hash)||(adminAlias&&a.member_role!=='admin'))fail(401,'کد ملی یا رمز عبور اشتباه است.');if(!a.verified_at)fail(403,'ابتدا ایمیل حساب را تأیید کنید.');return startSession(request,db,a.id,json({ok:true,redirect:'/dashboard'}));}
 async function accessCallback(request,env,runtime){
  const signup=await pending(request,env.DB);if(!signup)fail(403,'ورود با ایمیل غیرفعال است. با کد ملی و رمز عبور وارد شوید.');
  const assertion=request.headers.get('Cf-Access-Jwt-Assertion');if(!assertion)fail(401,'تأیید ایمیل انجام نشد؛ دوباره از دکمهٔ تأیید استفاده کنید.');

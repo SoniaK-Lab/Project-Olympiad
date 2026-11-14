@@ -3,13 +3,22 @@
   "account_id": "3df3d7d02ebf3fff12a500ba06ff0df8",
   "main": "mobile-worker.mjs",
   "compatibility_date": "2026-05-15",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "keep_vars": true,
-  "observability": {"enabled": true},
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "clinical-bridge-db",
-    "database_id": "9a3bdf6f-c8e7-4a12-9eea-593d0a35bc77"
-  }]
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clinical-bridge-db",
+      "database_id": "9a3bdf6f-c8e7-4a12-9eea-593d0a35bc77"
+    }
+  ],
+  "vars": {
+    "ADMIN_LOGIN_CODE": "1111111111"
+  }
 }

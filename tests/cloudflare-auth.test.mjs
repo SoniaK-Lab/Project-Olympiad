@@ -58,8 +58,17 @@ cookie='';verifiedEmail='new@example.test';r=await req('/api/local-auth/signup',
 cookie='';verifiedEmail='new-mentor@example.test';r=await req('/api/local-auth/signup','POST',{nationalId:code(12345681),email:verifiedEmail,password,confirmPassword:password,role:'mentor'});assert.equal(r.status,202);cookie=cookies(r);assert.equal(sql.prepare('SELECT role FROM cb_pending_signups WHERE email=?').get(verifiedEmail).role,'mentor');assert.equal(sql.prepare('SELECT id FROM members WHERE email=?').get(verifiedEmail),undefined);
 r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.status,303);cookie=cookies(r);summary=await(await req('/api/dashboard')).json();assert.equal(summary.profile.role,'mentor');assert.equal(summary.stats.members,0);assert.equal(summary.stats.sessions,0);
 assert.match(authPage('signup'),/name="role"/);assert.match(authPage('signup'),/value="student"/);assert.match(authPage('signup'),/value="mentor"/);
+// An operator-configured alias can only log into an already provisioned administrator.
+cookie='';env.ADMIN_LOGIN_CODE='1111111111';
+sql.prepare('UPDATE cb_accounts SET national_id=? WHERE email=?').run(env.ADMIN_LOGIN_CODE,'owner@example.test');
+r=await req('/api/local-auth/login','POST',{nationalId:'۱۱۱۱۱۱۱۱۱۱',password});assert.equal(r.status,200);cookie=cookies(r);assert.equal((await(await req('/api/dashboard')).json()).profile.role,'admin');cookie='';
+r=await req('/api/local-auth/login','POST',{nationalId:env.ADMIN_LOGIN_CODE,password:'wrong password'});assert.equal(r.status,401);
+sql.prepare("UPDATE members SET role='mentor' WHERE id='owner'").run();r=await req('/api/local-auth/login','POST',{nationalId:env.ADMIN_LOGIN_CODE,password});assert.equal(r.status,401);sql.prepare("UPDATE members SET role='admin' WHERE id='owner'").run();
+delete env.ADMIN_LOGIN_CODE;r=await req('/api/local-auth/login','POST',{nationalId:'1111111111',password});assert.equal(r.status,400);
+r=await req('/api/local-auth/signup','POST',{nationalId:'1111111111',email:'alias-claim@example.test',password,confirmPassword:password});assert.equal(r.status,400);
+sql.prepare('UPDATE cb_accounts SET national_id=? WHERE email=?').run(ownerId,'owner@example.test');
 cookie='';
 for(let i=0;i<11;i++)r=await req('/api/local-auth/login','POST',{nationalId:code(98765432),password});assert.equal(r.status,429);
 for(const html of [authPage('login'),authPage('signup'),authPage('verify',{email:'<script>unsafe</script>@test.local'}),authPage('logout'),dashboardPage()])for(const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new Script(script[1]);
 assert.ok(!authPage('verify',{email:'<script>unsafe</script>@test.local'}).includes('<script>unsafe</script>'));
-console.log('PASS: national-ID-only access, legacy-session blocking, disabled email login, pending-only signup, matching verified email, signed-identity boundary, expiration, national login, cookie revocation, verified student/mentor signup, admin-role rejection, role-preserving migration, dashboard isolation, forged headers, CSRF and throttling');
+console.log('PASS: admin-only configured alias, national-ID-only access, legacy-session blocking, disabled email login, pending-only signup, matching verified email, signed-identity boundary, expiration, national login, cookie revocation, verified student/mentor signup, admin-role rejection, role-preserving migration, dashboard isolation, forged headers, CSRF and throttling');
