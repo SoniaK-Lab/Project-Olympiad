@@ -1,4 +1,5 @@
-import { authPage, dashboardPage } from './pages.mjs';
+import { createRecovery } from './recovery.mjs';
+import { authPage, dashboardPage, recoveryPage } from './pages.mjs';
 const MAX_AGE=604800, PENDING_AGE=900;
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 const html=content=>new Response(content,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin','Content-Security-Policy':"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"}});
@@ -25,6 +26,7 @@ async function readBody(request){if(request.headers.get('origin')!==new URL(requ
 async function session(request,db){const value=token(request);if(!value)return null;return db.prepare('SELECT a.id AS account_id,a.identity,a.email,a.name,a.national_id,a.verified_at,m.id AS member_id,m.role,m.mentor_id,m.name AS member_name FROM cb_sessions s JOIN cb_accounts a ON a.id=s.account_id JOIN members m ON m.identity=a.identity WHERE s.token_hash=? AND s.expires>? AND a.verified_at IS NOT NULL AND length(trim(a.national_id))>0').bind(await digest(value),Date.now()).first();}
 async function startSession(request,db,accountId,response){const value=random();await db.prepare('INSERT INTO cb_sessions(token_hash,account_id,expires) VALUES(?,?,?)').bind(await digest(value),accountId,Date.now()+MAX_AGE*1000).run();response.headers.append('Set-Cookie',cookie(request,value));response.headers.append('Set-Cookie',cookie(request,'',0,true));return response;}
 async function pending(request,db){const value=token(request,true);if(!value)return null;return db.prepare('SELECT * FROM cb_pending_signups WHERE token_hash=? AND expires>? AND used=0').bind(await digest(value),Date.now()).first();}
+const recovery=createRecovery({json,html,redirect,fail,readBody,limited,normalizeCode,nationalCode,passwordHash,random,digest});
 async function signup(request,env){
  const data=await readBody(request),db=env.DB;await limited(db,'signup:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),10);
  await db.batch([db.prepare('DELETE FROM cb_pending_signups WHERE expires<?').bind(Date.now()),db.prepare('DELETE FROM cb_auth_limits WHERE bucket<?').bind(Math.floor(Date.now()/900000)-2)]);
@@ -36,10 +38,11 @@ async function signup(request,env){
  if(await db.prepare('SELECT id FROM cb_accounts WHERE national_id=? OR (email=? AND national_id IS NOT NULL)').bind(nationalId,email).first())fail(409,'برای این کد ملی یا ایمیل قبلاً حساب ساخته شده است؛ وارد شوید.');
  const value=random(),salt=random(),hash=await passwordHash(password,salt);
  await db.prepare('INSERT INTO cb_pending_signups(token_hash,national_id,email,password_hash,salt,expires,used,role) VALUES(?,?,?,?,?,?,0,?)').bind(await digest(value),nationalId,email,hash,salt,Date.now()+PENDING_AGE*1000,role).run();
- const result=json({ok:true,verificationRequired:true,redirect:'/verify-email'},202);result.headers.append('Set-Cookie',cookie(request,value,PENDING_AGE,true));return result;
+ const result=json({ok:true,verificationRequired:true,redirect:'/verify-email'},202);recovery.clearCookie(request,result);result.headers.append('Set-Cookie',cookie(request,value,PENDING_AGE,true));return result;
 }
 async function login(request,env){const data=await readBody(request),db=env.DB;await limited(db,'login:ip:'+(request.headers.get('CF-Connecting-IP')||'local'),40);const raw=normalizeCode(data.nationalId),adminAlias=typeof env.ADMIN_LOGIN_CODE==='string'&&raw===env.ADMIN_LOGIN_CODE;const code=adminAlias?raw:nationalCode(data.nationalId);await limited(db,'login:account:'+code,10);if(typeof data.password!=='string'||data.password.length<8||data.password.length>128)fail(401,'کد ملی یا رمز عبور اشتباه است.');const a=await db.prepare('SELECT a.*,m.role AS member_role FROM cb_accounts a JOIN members m ON m.identity=a.identity WHERE a.national_id=?').bind(code).first();const hash=await passwordHash(data.password,a?.salt||'clinical-bridge-dummy-salt');if(!a||!equal(hash,a.password_hash)||(adminAlias&&a.member_role!=='admin'))fail(401,'کد ملی یا رمز عبور اشتباه است.');if(!a.verified_at)fail(403,'ابتدا ایمیل حساب را تأیید کنید.');return startSession(request,db,a.id,json({ok:true,redirect:'/dashboard'}));}
 async function accessCallback(request,env,runtime){
+ if(recovery.hasCookie(request))return recovery.verify(request,env,runtime);
  const signup=await pending(request,env.DB);if(!signup)fail(403,'ورود با ایمیل غیرفعال است. با کد ملی و رمز عبور وارد شوید.');
  const assertion=request.headers.get('Cf-Access-Jwt-Assertion');if(!assertion)fail(401,'تأیید ایمیل انجام نشد؛ دوباره از دکمهٔ تأیید استفاده کنید.');
  let user;try{user=await runtime.verifyAccessToken(assertion,env)}catch{fail(401,'تأیید ایمیل معتبر نیست یا منقضی شده است.');}
@@ -81,6 +84,11 @@ async function dashboard(member,db){
 export function createWorker(runtime){return {async fetch(request,env,ctx){const url=new URL(request.url),path=url.pathname;try{
  if(path==='/healthz')return json({service:'clinical-bridge',hosting:'cloudflare',authentication:'national-id-password',emailVerification:'cloudflare-access-otp',database:!!env.DB});
  if(Object.hasOwn(runtime.assets,path))return runtime.fetchAsset(request);
+ if(path==='/api/local-auth/forgot-password'&&request.method==='POST')return await recovery.start(request,env);
+ if(path==='/api/local-auth/reset-password'&&request.method==='POST')return await recovery.finish(request,env);
+ if(path==='/forgot-password')return html(recoveryPage('forgot',{error:url.searchParams.has('expired')?'درخواست بازیابی منقضی شده است؛ دوباره شروع کنید.':null}));
+ if(path==='/forgot-password/verify'){const row=await recovery.get(request,env.DB);return row?row.verified_at?redirect('/reset-password'):html(recoveryPage('verify')):redirect('/forgot-password?expired=1');}
+ if(path==='/reset-password'){const row=await recovery.get(request,env.DB);return row?.verified_at?html(recoveryPage('reset')):redirect('/forgot-password?expired=1');}
  if(path==='/api/local-auth/signup'&&request.method==='POST')return await signup(request,env);
  if(path==='/api/local-auth/login'&&request.method==='POST')return await login(request,env);
  if(['/logout','/api/local-auth/logout','/api/auth/logout'].includes(path)&&request.method==='POST'){
@@ -91,7 +99,7 @@ export function createWorker(runtime){return {async fetch(request,env,ctx){const
  if(path==='/access-login')return await accessCallback(request,env,runtime);
  if(path==='/verify-email'){const p=await pending(request,env.DB);return p?html(authPage('verify',{email:p.email})):html(authPage('signup',{error:'درخواست تأیید منقضی شده است؛ دوباره ثبت‌نام کنید.'}));}
  if(['/', '/login','/signup'].includes(path)){
-  const member=await session(request,env.DB);if(member&&path!=='/signup')return redirect('/dashboard');return html(authPage(path==='/signup'?'signup':path==='/login'?'login':'home'));
+  const member=await session(request,env.DB);if(member&&path!=='/signup')return redirect('/dashboard');return html(authPage(path==='/signup'?'signup':path==='/login'?'login':'home',{success:path==='/login'&&url.searchParams.get('reset')==='success'?'رمز عبور تغییر کرد. با کد ملی و رمز تازه وارد شوید.':null}));
  }
  const member=await session(request,env.DB);if(!member)return path.startsWith('/api/')?json({error:'برای ادامه وارد حساب شوید.'},401):redirect('/login');
  if(path==='/dashboard'){if(url.searchParams.get('embedded')!=='1')return redirect('/ui?view=overview');const response=html(dashboardPage(true));response.headers.set('Content-Security-Policy',"frame-ancestors 'self'; base-uri 'self'; form-action 'self'");return response;}

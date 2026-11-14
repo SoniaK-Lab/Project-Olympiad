@@ -1,7 +1,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createWorker,nationalCode} from '../cloudflare/auth-worker.mjs';
-import {authPage,dashboardPage} from '../cloudflare/pages.mjs';
+import {authPage,dashboardPage,recoveryPage} from '../cloudflare/pages.mjs';
 import assert from 'node:assert/strict';
 import {Script} from 'node:vm';
 const sql=new DatabaseSync(':memory:');
@@ -9,6 +9,7 @@ for(const f of ['0000_tiny_dracula','0001_tired_mimic','0002_unusual_sunspot','0
 sql.exec(`CREATE TABLE cb_accounts(id TEXT PRIMARY KEY,identity TEXT UNIQUE NOT NULL,email TEXT UNIQUE NOT NULL COLLATE NOCASE,name TEXT NOT NULL,password_hash TEXT NOT NULL,salt TEXT NOT NULL,created TEXT NOT NULL);CREATE TABLE cb_sessions(token_hash TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES cb_accounts(id),expires INTEGER NOT NULL);CREATE TABLE cb_auth_limits(key TEXT,bucket INTEGER,count INTEGER,PRIMARY KEY(key,bucket));`);
 sql.exec(readFileSync('cloudflare/migrations/0001_national_email_auth.sql','utf8'));
 sql.exec(readFileSync('cloudflare/migrations/0002_signup_roles.sql','utf8'));
+sql.exec(readFileSync('cloudflare/migrations/0003_password_recovery.sql','utf8'));
 const DB={prepare(query){let params=[];return {bind(...p){params=p;return this},async first(){return sql.prepare(query).get(...params)||null},async all(){return {results:sql.prepare(query).all(...params)}},async run(){return {meta:{changes:Number(sql.prepare(query).run(...params).changes)}}}}},async batch(statements){sql.exec('BEGIN');try{const result=[];for(const s of statements)result.push(await s.run());sql.exec('COMMIT');return result}catch(e){sql.exec('ROLLBACK');throw e}}};
 let verifiedEmail='learner@example.test',cookie='',contextIdentity=null,passedHeaders=null;
 const worker=createWorker({assets:{},fetchAsset:async()=>new Response('asset'),verifyAccessToken:async assertion=>{if(assertion!=='valid-signed-otp')throw Error('bad token');return {email:verifiedEmail,userId:'cf-access:'+verifiedEmail}},identityContext:{run:async(identity,fn)=>{contextIdentity=identity;return fn()}},appHandler:{fetch:async r=>{passedHeaders=r.headers;return new Response('<html><body><aside></aside><main>Clinical workspace</main></body></html>',{headers:{'Content-Type':'text/html'}})}}});
@@ -67,8 +68,35 @@ sql.prepare("UPDATE members SET role='mentor' WHERE id='owner'").run();r=await r
 delete env.ADMIN_LOGIN_CODE;r=await req('/api/local-auth/login','POST',{nationalId:'1111111111',password});assert.equal(r.status,400);
 r=await req('/api/local-auth/signup','POST',{nationalId:'1111111111',email:'alias-claim@example.test',password,confirmPassword:password});assert.equal(r.status,400);
 sql.prepare('UPDATE cb_accounts SET national_id=? WHERE email=?').run(ownerId,'owner@example.test');
+// Recovery cannot disclose the email, bypass identity proof, revive blocked accounts, or reuse a grant.
+cookie='';verifiedEmail='learner@example.test';
+r=await req('/api/local-auth/login','POST',{nationalId:id,password});assert.equal(r.status,200);const previousSession=cookies(r);
+r=await req('/api/local-auth/forgot-password','POST',{nationalId:id,email:verifiedEmail},{origin:'https://evil.test'});assert.equal(r.status,403);
+cookie='';r=await req('/api/local-auth/forgot-password','POST',{nationalId:code(33333334),email:'unknown@example.test'});assert.equal(r.status,202);const unknownResponse=await r.json();assert.ok(!JSON.stringify(unknownResponse).includes('unknown@example.test'));cookie=cookies(r);r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.status,200);assert.match(await r.text(),/بازیابی تأیید نشد/);assert.equal((await req('/reset-password')).status,303);
+// Expired challenges never permit selecting a new password.
+cookie='';r=await req('/api/local-auth/forgot-password','POST',{nationalId:id,email:verifiedEmail});cookie=cookies(r);sql.prepare('UPDATE cb_password_resets SET expires=0').run();assert.equal((await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'})).headers.get('location'),'/forgot-password?expired=1');
+// A correct request still cannot reset without a matching signed email.
+cookie='';r=await req('/api/local-auth/forgot-password','POST',{nationalId:id,email:verifiedEmail});assert.deepEqual(await r.json(),unknownResponse);cookie=cookies(r);const challengeCookie=cookie;
+assert.equal((await req('/api/local-auth/reset-password','POST',{password:'recovered-test-password',confirmPassword:'recovered-test-password'})).status,400);
+assert.equal((await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'forged'})).status,401);
+verifiedEmail='other@example.test';r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.status,200);assert.match(await r.text(),/بازیابی تأیید نشد/);
+verifiedEmail='learner@example.test';r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.headers.get('location'),'/reset-password');cookie=cookies(r);const grantCookie=cookie;assert.notEqual(grantCookie,challengeCookie);
+assert.equal((await req('/api/local-auth/reset-password','POST',{password:'recovered-test-password',confirmPassword:'wrong'})).status,400);
+r=await req('/api/local-auth/reset-password','POST',{password:'recovered-test-password',confirmPassword:'recovered-test-password'});assert.equal(r.status,200);assert.equal(sql.prepare('SELECT count(*) AS n FROM cb_password_resets WHERE account_id=?').get(currentAccount).n,0);
+cookie=previousSession;assert.equal((await req('/api/dashboard')).status,401);
+cookie=grantCookie;assert.equal((await req('/api/local-auth/reset-password','POST',{password:'replay-test-password',confirmPassword:'replay-test-password'})).status,400);
+cookie=challengeCookie;assert.equal((await req('/reset-password')).status,303);
+cookie='';assert.equal((await req('/api/local-auth/login','POST',{nationalId:id,password})).status,401);
+r=await req('/api/local-auth/login','POST',{nationalId:id,password:'recovered-test-password'});assert.equal(r.status,200);cookie=cookies(r);assert.equal((await(await req('/api/dashboard')).json()).profile.role,'student');
+// Removing a code also blocks recovery; knowing the email cannot restore access.
+sql.prepare('UPDATE cb_accounts SET national_id=NULL WHERE id=?').run(currentAccount);cookie='';r=await req('/api/local-auth/forgot-password','POST',{nationalId:id,email:verifiedEmail});cookie=cookies(r);r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.match(await r.text(),/بازیابی تأیید نشد/);sql.prepare('UPDATE cb_accounts SET national_id=? WHERE id=?').run(id,currentAccount);
+// Operator-provisioned administrators can recover with the same proof without losing their role.
+cookie='';env.ADMIN_LOGIN_CODE='1111111111';verifiedEmail='owner@example.test';sql.prepare('UPDATE cb_accounts SET national_id=? WHERE email=?').run(env.ADMIN_LOGIN_CODE,verifiedEmail);
+r=await req('/api/local-auth/forgot-password','POST',{nationalId:env.ADMIN_LOGIN_CODE,email:verifiedEmail});assert.equal(r.status,202);cookie=cookies(r);r=await req('/access-login','GET',null,{'Cf-Access-Jwt-Assertion':'valid-signed-otp'});assert.equal(r.status,303);cookie=cookies(r);assert.equal((await req('/api/local-auth/reset-password','POST',{password:'recovered-admin-password',confirmPassword:'recovered-admin-password'})).status,200);cookie='';r=await req('/api/local-auth/login','POST',{nationalId:env.ADMIN_LOGIN_CODE,password:'recovered-admin-password'});assert.equal(r.status,200);cookie=cookies(r);assert.equal((await(await req('/api/dashboard')).json()).profile.role,'admin');delete env.ADMIN_LOGIN_CODE;
+assert.match(authPage('login'),/href="\/forgot-password"/);
+for(const mode of ['forgot','verify','reset'])for(const script of recoveryPage(mode).matchAll(/<script>([\s\S]*?)<\/script>/g))new Script(script[1]);
 cookie='';
 for(let i=0;i<11;i++)r=await req('/api/local-auth/login','POST',{nationalId:code(98765432),password});assert.equal(r.status,429);
 for(const html of [authPage('login'),authPage('signup'),authPage('verify',{email:'<script>unsafe</script>@test.local'}),authPage('logout'),dashboardPage()])for(const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new Script(script[1]);
 assert.ok(!authPage('verify',{email:'<script>unsafe</script>@test.local'}).includes('<script>unsafe</script>'));
-console.log('PASS: admin-only configured alias, national-ID-only access, legacy-session blocking, disabled email login, pending-only signup, matching verified email, signed-identity boundary, expiration, national login, cookie revocation, verified student/mentor signup, admin-role rejection, role-preserving migration, dashboard isolation, forged headers, CSRF and throttling');
+console.log('PASS: verified one-time recovery, expiry, anti-enumeration, session revocation, disabled legacy recovery, admin-only configured alias, national-ID-only access, legacy-session blocking, disabled email login, pending-only signup, matching verified email, signed-identity boundary, expiration, national login, cookie revocation, verified student/mentor signup, admin-role rejection, role-preserving migration, dashboard isolation, forged headers, CSRF and throttling');
