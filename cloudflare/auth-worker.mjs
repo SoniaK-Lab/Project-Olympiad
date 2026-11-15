@@ -1,3 +1,4 @@
+import { loginBackgroundResponse } from './login-background.mjs';
 import { projectLogoResponse } from './project-logo.mjs';
 import { applyBranding } from './branding.mjs';
 import { siteGuideScript } from './site-guide.mjs';
@@ -87,6 +88,7 @@ async function dashboard(member,db){
  return {profile:{name:member.member_name,email:member.email,role,emailVerified:true,nationalIdSet:!!member.national_id,mentor:mentor?.name||null},stats:{sessions:sessionCounts.total,upcoming:sessionCounts.upcoming||0,assignments:assignmentCounts.total,pending:assignmentCounts.pending||0,members:count?.n??null},upcoming:s.results,assignments:a.results};
 }
 export function createWorker(runtime){return {async fetch(request,env,ctx){const url=new URL(request.url),path=url.pathname;try{
+ if(path==='/login-bridge-background.webp')return loginBackgroundResponse();
  if(path==='/project-logo.webp')return projectLogoResponse();
  if(path==='/healthz')return json({service:'clinical-bridge',hosting:'cloudflare',authentication:'national-id-password',emailVerification:'cloudflare-access-otp',database:!!env.DB});
  if(Object.hasOwn(runtime.assets,path))return runtime.fetchAsset(request);
