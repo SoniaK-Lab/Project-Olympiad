@@ -1,0 +1,15 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+import {sharedTheme} from '../cloudflare/theme.mjs';
+const source=readFileSync('cloudflare/mobile-worker.mjs','utf8');
+const decorate=new Function('sharedTheme',source.slice(source.indexOf('const manifest='),source.indexOf('function withMobileApp'))+';return decorateHtml;')(sharedTheme);
+const legacy='<!doctype html><html><head><style>body{background:pink}</style><style id="professional-palette">body{color:pink}</style></head><body><main>Dashboard</main><style>.panel{background:pink}</style><script>/* initialize workspace */</script></body></html>';
+const result=decorate(legacy),head=result.slice(0,result.indexOf('</head>'));
+assert.ok(head.includes(sharedTheme),'blue palette must be present in head before body paints');
+assert.ok(head.lastIndexOf('id="cb-shared-theme"')>head.indexOf('background:pink'),'early theme overrides legacy head styles');
+assert.ok(!result.includes('id="professional-palette"'),'old palette removed');
+assert.ok(!/rel="stylesheet"[^>]*theme\.css/.test(result),'theme cannot depend on a delayed stylesheet request');
+assert.ok(result.indexOf('id="cb-shared-theme-final"')>result.indexOf('/* initialize workspace */'),'final inline palette retains priority over legacy body rules');
+assert.equal(decorate(result),result,'decoration remains idempotent');
+assert.ok(result.includes('<main>Dashboard</main>'));
+console.log('PASS: blue theme before first paint, no theme network dependency, legacy cascade preserved, idempotent decoration');
