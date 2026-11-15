@@ -1,3 +1,5 @@
+import { projectLogoResponse } from './project-logo.mjs';
+import { applyBranding } from './branding.mjs';
 import { siteGuideScript } from './site-guide.mjs';
 import { patientVisualScript } from './patient-visual.mjs';
 import { backpackScript } from './backpack.mjs';
@@ -5,7 +7,7 @@ import { createRecovery } from './recovery.mjs';
 import { authPage, dashboardPage, recoveryPage } from './pages.mjs';
 const MAX_AGE=604800, PENDING_AGE=900;
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-const html=content=>new Response(content,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin','Content-Security-Policy':"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"}});
+const html=content=>new Response(applyBranding(content),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin','Content-Security-Policy':"frame-ancestors 'none'; base-uri 'self'; form-action 'self'"}});
 const redirect=location=>new Response(null,{status:303,headers:{Location:location,'Cache-Control':'no-store'}});
 const hex=bytes=>Array.from(new Uint8Array(bytes),n=>n.toString(16).padStart(2,'0')).join('');
 const random=()=>hex(crypto.getRandomValues(new Uint8Array(32)));
@@ -85,6 +87,7 @@ async function dashboard(member,db){
  return {profile:{name:member.member_name,email:member.email,role,emailVerified:true,nationalIdSet:!!member.national_id,mentor:mentor?.name||null},stats:{sessions:sessionCounts.total,upcoming:sessionCounts.upcoming||0,assignments:assignmentCounts.total,pending:assignmentCounts.pending||0,members:count?.n??null},upcoming:s.results,assignments:a.results};
 }
 export function createWorker(runtime){return {async fetch(request,env,ctx){const url=new URL(request.url),path=url.pathname;try{
+ if(path==='/project-logo.webp')return projectLogoResponse();
  if(path==='/healthz')return json({service:'clinical-bridge',hosting:'cloudflare',authentication:'national-id-password',emailVerification:'cloudflare-access-otp',database:!!env.DB});
  if(Object.hasOwn(runtime.assets,path))return runtime.fetchAsset(request);
  if(path==='/api/local-auth/forgot-password'&&request.method==='POST')return await recovery.start(request,env);
@@ -114,6 +117,6 @@ export function createWorker(runtime){return {async fetch(request,env,ctx){const
  const result=await runtime.identityContext.run(identity,()=>runtime.appHandler.fetch(new Request(request,{headers}),{...env,ASSETS:{fetch:runtime.fetchAsset}},ctx));
  if(path==='/ui'&&result.headers.get('content-type')?.includes('text/html')){
   const script=`<script>document.addEventListener('click',async e=>{const a=e.target.closest('a[href^="/logout"]');if(!a)return;e.preventDefault();const r=await fetch('/api/local-auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(r.ok)location.assign('/login')});const nav=document.querySelector('aside nav'),overview=document.getElementById('overview');if(nav&&overview&&!document.getElementById('account-dashboard')){const button=nav.querySelector('[data-view="overview"]');if(button)button.innerHTML='<span>▦</span>داشبورد';overview.querySelectorAll(':scope > .greeting,:scope > .stats,:scope > .columns').forEach(el=>el.hidden=true);const frame=document.createElement('iframe');frame.id='account-dashboard';frame.title='داشبورد حساب پل بالینی';frame.src='/dashboard?embedded=1';frame.style.cssText='display:block;width:100%;height:1000px;border:0;background:transparent;margin:24px 0';const hero=overview.querySelector('.hero');if(hero)hero.insertAdjacentElement('afterend',frame);else overview.prepend(frame);window.addEventListener('message',event=>{if(event.origin!==location.origin||event.source!==frame.contentWindow||event.data?.type!=='bridge-dashboard-height')return;const height=event.data.height;if(typeof height==='number'&&Number.isFinite(height)&&height>0&&height<20000)frame.style.height=Math.ceil(height+8)+'px'});const previousNavigate=navigate;navigate=function(id){return previousNavigate(id==='dashboard'?'overview':id)}}const view=new URL(location.href).searchParams.get('view');if(view){let tries=0;const timer=setInterval(()=>{if(typeof serverReady!=='undefined'&&serverReady&&typeof navigate==='function'){const id=view==='dashboard'?'overview':view==='backpack'?'crisis-backpack':view;if(document.getElementById(id)){clearInterval(timer);navigate(id)}else if(++tries>100)clearInterval(timer)}else if(++tries>100)clearInterval(timer)},100)}</script>`;
-  const content=(await result.text()).replace(/<a\b[^>]*href=["']\/registrations(?:\?[^"']*)?["'][^>]*>[\s\S]*?<\/a>/g,'').replace('</body>',script+'<script>'+backpackScript+'</script><script>'+patientVisualScript+'</script><script>'+siteGuideScript+'</script></body>');const out=new Headers(result.headers);out.delete('content-length');return new Response(content,{status:result.status,headers:out});
+  const content=(await result.text()).replace(/<a\b[^>]*href=["']\/registrations(?:\?[^"']*)?["'][^>]*>[\s\S]*?<\/a>/g,'').replace('</body>',script+'<script>'+backpackScript+'</script><script>'+patientVisualScript+'</script><script>'+siteGuideScript+'</script></body>');const out=new Headers(result.headers);out.delete('content-length');return new Response(applyBranding(content),{status:result.status,headers:out});
  }return result;
  }catch(e){return json({error:e.status?e.message:'ارتباط با سامانه برقرار نشد؛ دوباره تلاش کنید.'},e.status||500)}}};}
