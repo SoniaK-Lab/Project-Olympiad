@@ -17,9 +17,11 @@ const refreshPage=`<!doctype html><html lang="fa" dir="rtl"><head><meta charset=
 const style=`#cb-mobile-install{position:fixed;z-index:9000;inset-inline-end:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));background:#123e5a;color:#fff;border:1px solid #8bc7db;border-radius:28px;padding:10px 18px;font:600 14px Vazir,Tahoma,sans-serif;box-shadow:0 5px 20px #123e5a30;cursor:pointer}#cb-mobile-install[hidden]{display:none}#cb-install-guide{background:#fff;color:#123e5a;border:1px solid #dbe6ee;border-radius:24px;max-width:min(420px,85vw);padding:28px;font:16px Vazir,Tahoma,sans-serif;line-height:2}#cb-install-guide::backdrop{background:#102f47aa}#cb-install-close{background:#123e5a;color:white;border:0;padding:10px 20px;border-radius:12px;font:inherit;cursor:pointer}@media(max-width:600px){input,select,textarea{font-size:16px}header nav{flex-wrap:wrap;gap:12px}.actions{flex-wrap:wrap}.hero{padding-top:40px}dialog{max-height:80dvh;overflow:auto}}`;
 function decorateHtml(html){
  if(html.includes('id="cb-mobile-install-loader"'))return html;
- const head='<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#123e5a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="پل بالینی"><link rel="apple-touch-icon" href="/mobile/icon-192.png"><style>'+style+'</style>';
+ // Inline the palette before first paint; repeat after legacy body styles to retain cascade priority.
+ const palette='<style id="cb-shared-theme">'+sharedTheme+'</style>';
+ const head=palette+'<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#123e5a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="پل بالینی"><link rel="apple-touch-icon" href="/mobile/icon-192.png"><style>'+style+'</style>';
  const themed=html.replace(/<style id="professional-palette">[\s\S]*?<\/style>/,'');
- return themed.replace('</head>',head+'</head>').replace('</body>','<link id="cb-shared-theme" rel="stylesheet" href="/mobile/theme.css?v=20261114-blue">'+'<script id="cb-mobile-install-loader" src="/mobile/install.js?v=2" defer></script></body>');
+ return themed.replace('</head>',head+'</head>').replace('</body>','<style id="cb-shared-theme-final">'+sharedTheme+'</style>'+'<script id="cb-mobile-install-loader" src="/mobile/install.js?v=2" defer></script></body>');
 }
 function withMobileApp(original,assets={}){return {async fetch(request,env,ctx){
  const path=new URL(request.url).pathname;
